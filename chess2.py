@@ -367,3 +367,4 @@ while True:
     print(f"AI plays: {ai_response}")
     board = make_move(board, ai_response)
     history.append(ai_response)
+print('test')
