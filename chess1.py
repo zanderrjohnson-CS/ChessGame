@@ -112,3 +112,4 @@ board = chess.Board()
 best_move = choose_move(board, model)
 print("Model suggests:", best_move.uci())
 
+print("test")
