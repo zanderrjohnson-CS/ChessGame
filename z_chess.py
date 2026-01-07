@@ -134,5 +134,74 @@ for player in PLAYERS:
 # Done
 # ===============================
 
-print("\nData fetch complete.")
-print(get_available_archives("MagnusCarlsen")[-3:])
+def generate_move_to_index():
+    files = 'abcdefgh'
+    ranks = '12345678'
+    moves = []
+
+    for f1 in files:
+        for r1 in ranks:
+            for f2 in files:
+                for r2 in ranks:
+                    # Normal move
+                    moves.append(f"{f1}{r1}{f2}{r2}")
+                    # Pawn promotion (only makes sense for ranks 2->8 or 7->1)
+                    if r2 == '8':
+                        moves.append(f"{f1}{r1}{f2}{r2}q")
+                        moves.append(f"{f1}{r1}{f2}{r2}r")
+                        moves.append(f"{f1}{r1}{f2}{r2}b")
+                        moves.append(f"{f1}{r1}{f2}{r2}n")
+                    if r2 == '1':
+                        moves.append(f"{f1}{r1}{f2}{r2}q")
+                        moves.append(f"{f1}{r1}{f2}{r2}r")
+                        moves.append(f"{f1}{r1}{f2}{r2}b")
+                        moves.append(f"{f1}{r1}{f2}{r2}n")
+    move_to_index = {m: i for i, m in enumerate(moves)}
+    index_to_move = {i: m for m, i in move_to_index.items()}
+    return move_to_index, index_to_move
+
+MOVE_TO_INDEX, INDEX_TO_MOVE = generate_move_to_index()
+print("Total moves:", len(MOVE_TO_INDEX))
+
+def parse_game_to_examples(pgn_text):
+    """
+    Given a PGN string, yields (board_tensor, move_index) for each move.
+    """
+    examples = []
+
+    pgn_io = io.StringIO(pgn_text)
+    game = chess.pgn.read_game(pgn_io)
+    if game is None:
+        return examples
+
+    board = game.board()
+    for move in game.mainline_moves():
+        # Encode current board
+        board_tensor = board_to_tensor(board)
+        # Encode move as integer
+        move_str = move.uci()
+        if move_str not in MOVE_TO_INDEX:
+            # Sometimes weird promotion moves appear; skip them
+            board.push(move)
+            continue
+        move_idx = MOVE_TO_INDEX[move_str]
+
+        examples.append((board_tensor, move_idx))
+        board.push(move)
+
+    return examples
+all_examples = []
+
+for player, games in all_games.items():
+    print(f"Processing games for {player} ({len(games)} games)...")
+    for game in games:
+        pgn_text = game.get("pgn", "")
+        examples = parse_game_to_examples(pgn_text)
+        all_examples.extend(examples)
+
+print("Total training examples collected:", len(all_examples))
+board_tensor, move_idx = all_examples[0]
+print("Board tensor shape:", board_tensor.shape)
+print("Move index:", move_idx)
+print("Move UCI:", INDEX_TO_MOVE[move_idx])
+
