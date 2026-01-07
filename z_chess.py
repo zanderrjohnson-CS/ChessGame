@@ -205,3 +205,23 @@ print("Board tensor shape:", board_tensor.shape)
 print("Move index:", move_idx)
 print("Move UCI:", INDEX_TO_MOVE[move_idx])
 
+def save_training_examples(examples, filename="chess_policy_data.npz"):
+    """
+    Saves training examples to disk as NumPy arrays.
+    """
+    X = np.stack([ex[0] for ex in examples])   # board tensors
+    y = np.array([ex[1] for ex in examples])   # move indices
+
+    np.savez_compressed(filename, X=X, y=y)
+
+    print(f"Saved {len(examples)} examples to {filename}")
+    print("X shape:", X.shape)
+    print("y shape:", y.shape)
+save_training_examples(all_examples, "chess_policy_2024_elite.npz")
+data = np.load("chess_policy_2024_elite.npz")
+X_loaded = data["X"]
+y_loaded = data["y"]
+
+print("Reloaded X shape:", X_loaded.shape)
+print("Reloaded y shape:", y_loaded.shape)
+print("First move UCI:", INDEX_TO_MOVE[y_loaded[0]])
