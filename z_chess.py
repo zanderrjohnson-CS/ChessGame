@@ -227,9 +227,14 @@ model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-for epoch in range(1):
+for epoch in range(3):
     total_loss = 0.0
-    for boards, moves in dataloader:
+    print(f"Starting epoch {epoch+1}...")
+
+    for i, (boards, moves) in enumerate(dataloader):
+        if i == 0:
+            print("  First batch loaded")
+
         boards, moves = boards.to(device), moves.to(device)
 
         optimizer.zero_grad()
