@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 # ===============================
 # CONFIG
 # ===============================
-COLLECT_DATA = False        # <-- SET TRUE ONLY WHEN YOU WANT TO RE-FETCH GAMES
+COLLECT_DATA = False       # <-- SET TRUE ONLY WHEN YOU WANT TO RE-FETCH GAMES
 DATASET_PATH = "chess_policy_2024_elite.npz"
 
 
