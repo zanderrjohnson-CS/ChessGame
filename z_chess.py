@@ -125,6 +125,15 @@ def filter_archives_by_year(archives, year):
 # ===============================
 # PGN → Training Examples
 # ===============================
+
+def legal_move_mask(board):
+    mask = np.full(len(MOVE_TO_INDEX), -1e9, dtype=np.float32)
+    for move in board.legal_moves:
+        uci = move.uci()
+        if uci in MOVE_TO_INDEX:
+            mask[MOVE_TO_INDEX[uci]] = 0.0
+    return mask
+
 def parse_game_to_examples(pgn_text):
     examples = []
     game = chess.pgn.read_game(io.StringIO(pgn_text))
@@ -138,7 +147,8 @@ def parse_game_to_examples(pgn_text):
         move_str = move.uci()
 
         if move_str in MOVE_TO_INDEX:
-            examples.append((board_tensor, MOVE_TO_INDEX[move_str]))
+            mask = legal_move_mask(board)
+            examples.append((board_tensor, MOVE_TO_INDEX[move_str], mask))
 
         board.push(move)
 
@@ -148,8 +158,11 @@ def parse_game_to_examples(pgn_text):
 def save_training_examples(examples, path):
     X = np.stack([e[0] for e in examples])
     y = np.array([e[1] for e in examples])
-    np.savez_compressed(path, X=X, y=y)
+    M = np.stack([e[2] for e in examples])
+
+    np.savez_compressed(path, X=X, y=y, M=M)
     print(f"Saved {len(y)} examples to {path}")
+
 
 
 # ===============================
@@ -179,21 +192,41 @@ else:
 # Dataset + Dataloader
 # ===============================
 data = np.load(DATASET_PATH)
+print(data["X"].shape, data["y"].shape, data["M"].shape)
+
+# ===============================
+# DEBUG: LIMIT DATASET SIZE
+# ===============================
+MAX_EXAMPLES = 2_000   # try 2_000 if still slow
+
+X = data["X"][:MAX_EXAMPLES]
+y = data["y"][:MAX_EXAMPLES]
+
+print(f"Using {len(y)} training examples for debugging")
+
 
 class ChessPolicyDataset(Dataset):
     def __init__(self, data):
         self.X = torch.tensor(data["X"], dtype=torch.float32)
         self.y = torch.tensor(data["y"], dtype=torch.long)
+        self.M = torch.tensor(data["M"], dtype=torch.float32)
 
     def __len__(self):
         return len(self.y)
 
     def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+        return self.X[idx], self.y[idx], self.M[idx]
+
 
 
 dataset = ChessPolicyDataset(data)
-dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+dataloader = DataLoader(
+    dataset,
+    batch_size=64,
+    shuffle=True,
+    num_workers=0   # IMPORTANT on macOS
+)
+
 
 
 # ===============================
@@ -227,21 +260,22 @@ model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-for epoch in range(3):
+for epoch in range(30):
     total_loss = 0.0
     print(f"Starting epoch {epoch+1}...")
 
-    for i, (boards, moves) in enumerate(dataloader):
-        if i == 0:
-            print("  First batch loaded")
-
-        boards, moves = boards.to(device), moves.to(device)
+    for boards, moves, masks in dataloader:
+        boards = boards.to(device)
+        moves = moves.to(device)
+        masks = masks.to(device)
 
         optimizer.zero_grad()
         logits = model(boards)
-        loss = criterion(logits, moves)
+        masked_logits = logits + masks
+        loss = criterion(masked_logits, moves)
         loss.backward()
         optimizer.step()
+
 
         total_loss += loss.item()
 
