@@ -126,13 +126,13 @@ def filter_archives_by_year(archives, year):
 # PGN → Training Examples
 # ===============================
 
-def legal_move_mask(board):
-    mask = np.full(len(MOVE_TO_INDEX), -1e9, dtype=np.float32)
-    for move in board.legal_moves:
-        uci = move.uci()
-        if uci in MOVE_TO_INDEX:
-            mask[MOVE_TO_INDEX[uci]] = 0.0
-    return mask
+# def legal_move_mask(board):
+#     mask = np.full(len(MOVE_TO_INDEX), -1e9, dtype=np.float32)
+#     for move in board.legal_moves:
+#         uci = move.uci()
+#         if uci in MOVE_TO_INDEX:
+#             mask[MOVE_TO_INDEX[uci]] = 0.0
+#     return mask
 
 def parse_game_to_examples(pgn_text):
     examples = []
@@ -147,8 +147,8 @@ def parse_game_to_examples(pgn_text):
         move_str = move.uci()
 
         if move_str in MOVE_TO_INDEX:
-            mask = legal_move_mask(board)
-            examples.append((board_tensor, MOVE_TO_INDEX[move_str], mask))
+            #mask = legal_move_mask(board)
+            examples.append((board_tensor, MOVE_TO_INDEX[move_str]))
 
         board.push(move)
 
@@ -158,9 +158,9 @@ def parse_game_to_examples(pgn_text):
 def save_training_examples(examples, path):
     X = np.stack([e[0] for e in examples])
     y = np.array([e[1] for e in examples])
-    M = np.stack([e[2] for e in examples])
+    #M = np.stack([e[2] for e in examples])
 
-    np.savez_compressed(path, X=X, y=y, M=M)
+    np.savez_compressed(path, X=X, y=y)
     print(f"Saved {len(y)} examples to {path}")
 
 
@@ -192,7 +192,7 @@ else:
 # Dataset + Dataloader
 # ===============================
 data = np.load(DATASET_PATH)
-print(data["X"].shape, data["y"].shape, data["M"].shape)
+print(data["X"].shape, data["y"].shape)
 
 # ===============================
 # DEBUG: LIMIT DATASET SIZE
@@ -209,13 +209,13 @@ class ChessPolicyDataset(Dataset):
     def __init__(self, data):
         self.X = torch.tensor(data["X"], dtype=torch.float32)
         self.y = torch.tensor(data["y"], dtype=torch.long)
-        self.M = torch.tensor(data["M"], dtype=torch.float32)
+        #self.M = torch.tensor(data["M"], dtype=torch.float32)
 
     def __len__(self):
         return len(self.y)
 
     def __getitem__(self, idx):
-        return self.X[idx], self.y[idx], self.M[idx]
+        return self.X[idx], self.y[idx]
 
 
 
@@ -264,15 +264,14 @@ for epoch in range(30):
     total_loss = 0.0
     print(f"Starting epoch {epoch+1}...")
 
-    for boards, moves, masks in dataloader:
+    for boards, moves in dataloader:
         boards = boards.to(device)
         moves = moves.to(device)
-        masks = masks.to(device)
+        #masks = masks.to(device)
 
         optimizer.zero_grad()
         logits = model(boards)
-        masked_logits = logits + masks
-        loss = criterion(masked_logits, moves)
+        loss = criterion(logits, moves)
         loss.backward()
         optimizer.step()
 
