@@ -11,7 +11,10 @@ class MoveRequest(BaseModel):
 class MoveResponse(BaseModel):
     move: str
 
-@app.post("/move", response_model=MoveResponse)
+@app.post("/move")
 def get_move(req: MoveRequest):
-    move = get_best_move(req.fen)
-    return {"move": move}
+    try:
+        return {"move": get_best_move(req.fen)}
+    except Exception as e:
+        return {"error": str(e)}
+
