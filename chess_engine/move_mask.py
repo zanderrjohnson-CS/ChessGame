@@ -3,16 +3,13 @@ import torch
 import chess
 from chess_engine.chess_model import MOVE_TO_INDEX, INDEX_TO_MOVE
 
-def select_legal_move(logits, board: chess.Board):
-    legal_moves = list(board.legal_moves)
-
+def select_legal_move(logits: torch.Tensor, board: chess.Board) -> chess.Move:
     mask = torch.full_like(logits, float("-inf"))
 
-    for move in legal_moves:
-        idx = MOVE_TO_INDEX(move)  # your existing mapping
-        mask[idx] = 0.0
+    for move in board.legal_moves:
+        idx = MOVE_TO_INDEX.get(move.uci())
+        if idx is not None:
+            mask[idx] = 0.0
 
-    masked_logits = logits + mask
-    move_idx = torch.argmax(masked_logits).item()
-
-    return INDEX_TO_MOVE(move_idx, board)
+    move_idx = torch.argmax(logits + mask).item()
+    return chess.Move.from_uci(INDEX_TO_MOVE[move_idx])

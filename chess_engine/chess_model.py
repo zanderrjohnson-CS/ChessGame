@@ -281,30 +281,36 @@ model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 print("Dataset size:", len(dataset))
+def train():
+    # everything in your training loop goes here
+    for epoch in range(20):
+        total_loss = 0.0
+        print(f"Starting epoch {epoch+1}...")
 
-for epoch in range(30):
-    total_loss = 0.0
-    print(f"Starting epoch {epoch+1}...")
+        for boards, moves in dataloader:
+            boards = boards.to(device)
+            moves = moves.to(device)
+            
 
-    for boards, moves in dataloader:
-        boards = boards.to(device)
-        moves = moves.to(device)
-        
-
-        optimizer.zero_grad()
-        logits = model(boards)
-        
-        loss = criterion(logits, moves)
-        loss.backward()
-        optimizer.step()
+            optimizer.zero_grad()
+            logits = model(boards)
+            
+            loss = criterion(logits, moves)
+            loss.backward()
+            optimizer.step()
 
 
-        total_loss += loss.item()
+            total_loss += loss.item()
 
-    print(f"Epoch {epoch+1} | Loss: {total_loss / len(dataloader):.4f}")    
+        print(f"Epoch {epoch+1} | Loss: {total_loss / len(dataloader):.4f}")    
 
-torch.save(model.state_dict(), "policy_net.pt")
-model = PolicyNetwork(len(MOVE_TO_INDEX))
-model.load_state_dict(torch.load("policy_net.pt", map_location=device))
+    torch.save(model.state_dict(), "policy_net.pt")
+
+
+if __name__ == "__main__":
+    train() 
+
+model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
+model.load_state_dict(torch.load("policy_net.pt", map_location=device, weights_only=True))
 model.eval()
 

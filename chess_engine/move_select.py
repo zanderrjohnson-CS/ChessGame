@@ -1,18 +1,25 @@
 # engine/engine.py
 import chess
-from chess_engine.chess_model import model, board_to_tensor as encode_board
+import torch
+from chess_engine.chess_model import model, board_to_tensor
 from chess_engine.move_mask import select_legal_move
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def get_best_move(fen: str) -> str:
     board = chess.Board(fen)
 
-    # Encode board
-    x = encode_board(board)          # shape: (1, C, 8, 8)
+    # 1) Encode board (NumPy: 16×8×8)
+    x_np = board_to_tensor(board)
 
-    # Predict logits
-    logits = model(x)                # shape: (1, num_moves)
+    # 2) Convert to torch + add batch dim → (1, 16, 8, 8)
+    x = torch.tensor(x_np, dtype=torch.float32).unsqueeze(0).to(device)
 
-    # Select legal move (mask at inference)
-    move = select_legal_move(logits[0], board)
+    # 3) Forward pass
+    with torch.no_grad():
+        logits = model(x).squeeze(0)   # (num_moves,)
+
+    # 4) Mask + select legal move
+    move = select_legal_move(logits, board)
 
     return move.uci()
