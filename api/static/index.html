@@ -1,0 +1,192 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Chess Bot (Text Board)</title>
+  <script src="https://unpkg.com/chess.js@1.0.0/chess.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 18px; }
+    .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 14px;
+      line-height: 1.25;
+      background: #0f1115;
+      color: #e8e8e8;
+      padding: 14px;
+      border-radius: 10px;
+      min-width: 360px;
+    }
+    input { padding: 8px 10px; font-size: 14px; width: 140px; }
+    button { padding: 8px 12px; font-size: 14px; cursor: pointer; }
+    .muted { color: #555; }
+    .err { color: #b00020; font-weight: 600; }
+    .ok { color: #0a7a2f; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h2>Play vs Your Bot (Text Board)</h2>
+  <p class="muted">Enter moves in UCI like <b>e2e4</b>. You are White. Bot replies as Black.</p>
+
+  <div class="row">
+    <div>
+      <pre id="board"></pre>
+
+      <div style="margin-top:12px;">
+        <input id="moveInput" placeholder="e2e4" />
+        <button id="playBtn">Play Move</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+
+      <p id="status" class="muted"></p>
+      <p><b>FEN:</b> <span id="fen" class="muted"></span></p>
+    </div>
+
+    <div>
+      <h3>Move List</h3>
+      <pre id="moves">(no moves yet)</pre>
+      <p id="msg"></p>
+    </div>
+  </div>
+
+<script>
+  const game = new Chess();
+  let busy = false;
+
+  function pieceCode(piece) {
+    if (!piece) return "--";
+    const p = piece.type; // p n b r q k
+    const color = piece.color; // w or b
+    return (color === "w" ? "w" : "b") + p; // wp, bk, etc
+  }
+
+  function renderBoard() {
+    // Print ranks 8 -> 1, files a -> h
+    let out = "    a  b  c  d  e  f  g  h\n";
+    out += "  +------------------------+\n";
+
+    for (let rank = 8; rank >= 1; rank--) {
+      out += rank + " | ";
+      for (let file = 0; file < 8; file++) {
+        const square = "abcdefgh"[file] + rank;
+        const piece = game.get(square);
+        out += pieceCode(piece) + " ";
+      }
+      out += "|\n";
+    }
+
+    out += "  +------------------------+\n";
+    document.getElementById("board").textContent = out;
+  }
+
+  function renderMoves() {
+    const hist = game.history({ verbose: true });
+    if (!hist.length) {
+      document.getElementById("moves").textContent = "(no moves yet)";
+      return;
+    }
+    // show as "1. e2e4 ... e7e5" using UCI-ish from/to
+    let s = "";
+    for (let i = 0; i < hist.length; i += 2) {
+      const moveNum = (i / 2) + 1;
+      const w = hist[i];
+      const b = hist[i + 1];
+      const wuci = w.from + w.to + (w.promotion ? w.promotion : "");
+      const buci = b ? (b.from + b.to + (b.promotion ? b.promotion : "")) : "";
+      s += `${moveNum}. ${wuci}` + (buci ? `  ${buci}` : "") + "\n";
+    }
+    document.getElementById("moves").textContent = s.trimEnd();
+  }
+
+  function updateUI(msg = "", isError = false) {
+    renderBoard();
+    renderMoves();
+    document.getElementById("fen").textContent = game.fen();
+
+    const statusEl = document.getElementById("status");
+    if (game.isGameOver()) {
+      if (game.isCheckmate()) statusEl.textContent = "Game over: checkmate.";
+      else if (game.isDraw()) statusEl.textContent = "Game over: draw.";
+      else statusEl.textContent = "Game over.";
+    } else {
+      statusEl.textContent = (game.turn() === "w") ? "Your turn (White)." : "Bot turn (Black).";
+    }
+
+    const msgEl = document.getElementById("msg");
+    msgEl.className = isError ? "err" : "ok";
+    msgEl.textContent = msg;
+  }
+
+  async function botMove() {
+    // Call your FastAPI endpoint POST /move with current FEN
+    const res = await fetch("/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fen: game.fen() })
+    });
+    const data = await res.json();
+    if (!data.move) throw new Error("No 'move' in response: " + JSON.stringify(data));
+    return data.move; // UCI like "e7e5"
+  }
+
+  async function playHumanMove() {
+    if (busy) return;
+    if (game.isGameOver()) {
+      updateUI("Game is over. Hit Reset.", true);
+      return;
+    }
+    if (game.turn() !== "w") {
+      updateUI("Not your turn yet.", true);
+      return;
+    }
+
+    const moveStr = document.getElementById("moveInput").value.trim();
+    if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/i.test(moveStr)) {
+      updateUI("Bad move format. Use UCI like e2e4 (optional promotion like e7e8q).", true);
+      return;
+    }
+
+    // Apply your move
+    const move = game.move(moveStr, { sloppy: true });
+    if (move === null) {
+      updateUI("Illegal move: " + moveStr, true);
+      return;
+    }
+
+    document.getElementById("moveInput").value = "";
+    updateUI("You played " + moveStr);
+
+    // Bot replies
+    busy = true;
+    try {
+      const botUci = await botMove();
+      const botApplied = game.move(botUci, { sloppy: true });
+      if (botApplied === null) {
+        updateUI("Bot returned illegal move: " + botUci, true);
+      } else {
+        updateUI("Bot played " + botUci);
+      }
+    } catch (e) {
+      updateUI("Bot request failed: " + e.message, true);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function resetGame() {
+    game.reset();
+    busy = false;
+    document.getElementById("moveInput").value = "";
+    updateUI("Reset.");
+  }
+
+  document.getElementById("playBtn").addEventListener("click", playHumanMove);
+  document.getElementById("resetBtn").addEventListener("click", resetGame);
+  document.getElementById("moveInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") playHumanMove();
+  });
+
+  updateUI("Ready.");
+</script>
+</body>
+</html>

@@ -17,4 +17,13 @@ def get_move(req: MoveRequest):
         return {"move": get_best_move(req.fen)}
     except Exception as e:
         return {"error": str(e)}
+    
+from fastapi.responses import HTMLResponse
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    with open("api/static/index.html", "r", encoding="utf-8") as f:
+        return f.read()
+
+
 
