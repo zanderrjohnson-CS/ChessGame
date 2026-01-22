@@ -1,4 +1,4 @@
-# engine/move_select.py
+# chess_engine/move_mask.py
 import torch
 import chess
 from chess_engine.chess_model import MOVE_TO_INDEX, INDEX_TO_MOVE

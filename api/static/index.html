@@ -1,51 +1,145 @@
-<!doctype html>
+<!-- <!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Chess Bot (Text Board)</title>
-  <script src="https://unpkg.com/chess.js@1.0.0/chess.min.js"></script>
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; padding: 18px; }
-    .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
-    pre {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 14px;
-      line-height: 1.25;
-      background: #0f1115;
-      color: #e8e8e8;
-      padding: 14px;
-      border-radius: 10px;
-      min-width: 360px;
+  <title>Chess Bot Tester</title>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    body { 
+      font-family: system-ui, -apple-system, sans-serif; 
+      padding: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
     }
-    input { padding: 8px 10px; font-size: 14px; width: 140px; }
-    button { padding: 8px 12px; font-size: 14px; cursor: pointer; }
-    .muted { color: #555; }
-    .err { color: #b00020; font-weight: 600; }
-    .ok { color: #0a7a2f; font-weight: 600; }
+    .container { 
+      display: flex; 
+      gap: 30px; 
+      align-items: flex-start; 
+      flex-wrap: wrap; 
+    }
+    .board-section {
+      flex: 1;
+      min-width: 400px;
+    }
+    .moves-section {
+      flex: 1;
+      min-width: 300px;
+    }
+    .board {
+      font-family: ui-monospace, 'Courier New', monospace;
+      font-size: 16px;
+      line-height: 1.4;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      padding: 20px;
+      border-radius: 8px;
+      white-space: pre;
+      margin: 15px 0;
+    }
+    .controls {
+      margin: 15px 0;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    input { 
+      padding: 10px 14px; 
+      font-size: 15px; 
+      border: 2px solid #ccc;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+    button { 
+      padding: 10px 18px; 
+      font-size: 15px; 
+      cursor: pointer;
+      border: none;
+      border-radius: 4px;
+      background: #4CAF50;
+      color: white;
+      font-weight: 500;
+    }
+    button:hover { background: #45a049; }
+    button:disabled { 
+      background: #ccc; 
+      cursor: not-allowed; 
+    }
+    #resetBtn {
+      background: #f44336;
+    }
+    #resetBtn:hover {
+      background: #da190b;
+    }
+    .status { 
+      padding: 12px;
+      border-radius: 4px;
+      margin: 10px 0;
+      font-weight: 500;
+    }
+    .status.info { background: #e3f2fd; color: #1565c0; }
+    .status.error { background: #ffebee; color: #c62828; }
+    .status.success { background: #e8f5e9; color: #2e7d32; }
+    .status.thinking { background: #fff3e0; color: #e65100; }
+    .fen-display {
+      font-family: monospace;
+      font-size: 12px;
+      color: #666;
+      word-break: break-all;
+      margin: 10px 0;
+      padding: 8px;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+    .moves-list {
+      font-family: ui-monospace, 'Courier New', monospace;
+      font-size: 14px;
+      line-height: 1.6;
+      background: #f9f9f9;
+      padding: 15px;
+      border-radius: 4px;
+      min-height: 200px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    h2 { margin-top: 0; color: #333; }
+    h3 { color: #555; }
+    .help {
+      background: #f0f0f0;
+      padding: 10px;
+      border-radius: 4px;
+      font-size: 14px;
+      color: #555;
+      margin: 10px 0;
+    }
   </style>
 </head>
 <body>
-  <h2>Play vs Your Bot (Text Board)</h2>
-  <p class="muted">Enter moves in UCI like <b>e2e4</b>. You are White. Bot replies as Black.</p>
+  <h2>Chess Bot Tester</h2>
+  <p class="help">
+    <strong>How to play:</strong> Enter moves in UCI format (e.g., <code>e2e4</code>). 
+    You play as White. Bot plays as Black.
+  </p>
 
-  <div class="row">
-    <div>
-      <pre id="board"></pre>
+  <div class="container">
+    <div class="board-section">
+      <div id="board" class="board"></div>
 
-      <div style="margin-top:12px;">
-        <input id="moveInput" placeholder="e2e4" />
+      <div class="controls">
+        <input id="moveInput" placeholder="e2e4" autocomplete="off" />
         <button id="playBtn">Play Move</button>
-        <button id="resetBtn">Reset</button>
+        <button id="resetBtn">Reset Game</button>
       </div>
 
-      <p id="status" class="muted"></p>
-      <p><b>FEN:</b> <span id="fen" class="muted"></span></p>
+      <div id="status" class="status info"></div>
+      
+      <div class="fen-display">
+        <strong>FEN:</strong> <span id="fen"></span>
+      </div>
     </div>
 
-    <div>
-      <h3>Move List</h3>
-      <pre id="moves">(no moves yet)</pre>
-      <p id="msg"></p>
+    <div class="moves-section">
+      <h3>Move History</h3>
+      <div id="moves" class="moves-list"></div>
     </div>
   </div>
 
@@ -53,140 +147,294 @@
   const game = new Chess();
   let busy = false;
 
-  function pieceCode(piece) {
-    if (!piece) return "--";
-    const p = piece.type; // p n b r q k
-    const color = piece.color; // w or b
-    return (color === "w" ? "w" : "b") + p; // wp, bk, etc
+  function pieceToSymbol(piece) {
+    if (!piece) return " - ";
+    const symbols = {
+      'p': 'p', 'n': 'n', 'b': 'b', 
+      'r': 'r', 'q': 'q', 'k': 'k'
+    };
+    const color = piece.color === 'w' ? 'w' : 'b';
+    return color + symbols[piece.type];
   }
 
   function renderBoard() {
-    // Print ranks 8 -> 1, files a -> h
-    let out = "    a  b  c  d  e  f  g  h\n";
-    out += "  +------------------------+\n";
+    let output = "   a  b  c  d  e  f  g  h\n";
+    output += "  ┌─────────────────────┐\n";
 
     for (let rank = 8; rank >= 1; rank--) {
-      out += rank + " | ";
+      output += rank + " │";
       for (let file = 0; file < 8; file++) {
         const square = "abcdefgh"[file] + rank;
         const piece = game.get(square);
-        out += pieceCode(piece) + " ";
+        output += pieceToSymbol(piece);
       }
-      out += "|\n";
+      output += "│\n";
     }
 
-    out += "  +------------------------+\n";
-    document.getElementById("board").textContent = out;
+    output += "  └─────────────────────┘";
+    document.getElementById("board").textContent = output;
   }
 
   function renderMoves() {
-    const hist = game.history({ verbose: true });
-    if (!hist.length) {
-      document.getElementById("moves").textContent = "(no moves yet)";
+    const history = game.history({ verbose: true });
+    if (!history.length) {
+      document.getElementById("moves").textContent = "No moves yet.";
       return;
     }
-    // show as "1. e2e4 ... e7e5" using UCI-ish from/to
-    let s = "";
-    for (let i = 0; i < hist.length; i += 2) {
-      const moveNum = (i / 2) + 1;
-      const w = hist[i];
-      const b = hist[i + 1];
-      const wuci = w.from + w.to + (w.promotion ? w.promotion : "");
-      const buci = b ? (b.from + b.to + (b.promotion ? b.promotion : "")) : "";
-      s += `${moveNum}. ${wuci}` + (buci ? `  ${buci}` : "") + "\n";
+
+    let output = "";
+    for (let i = 0; i < history.length; i += 2) {
+      const moveNum = Math.floor(i / 2) + 1;
+      const white = history[i];
+      const black = history[i + 1];
+      
+      const whiteMove = white.from + white.to + (white.promotion || '');
+      const blackMove = black ? (black.from + black.to + (black.promotion || '')) : '...';
+      
+      output += `${moveNum}. ${whiteMove.padEnd(6)} ${blackMove}\n`;
     }
-    document.getElementById("moves").textContent = s.trimEnd();
+    
+    document.getElementById("moves").textContent = output;
   }
 
-  function updateUI(msg = "", isError = false) {
+  function updateStatus(message, type = 'info') {
+    const statusEl = document.getElementById("status");
+    statusEl.textContent = message;
+    statusEl.className = `status ${type}`;
+  }
+
+  function updateUI() {
     renderBoard();
     renderMoves();
     document.getElementById("fen").textContent = game.fen();
 
-    const statusEl = document.getElementById("status");
     if (game.isGameOver()) {
-      if (game.isCheckmate()) statusEl.textContent = "Game over: checkmate.";
-      else if (game.isDraw()) statusEl.textContent = "Game over: draw.";
-      else statusEl.textContent = "Game over.";
+      if (game.isCheckmate()) {
+        const winner = game.turn() === 'w' ? 'Black' : 'White';
+        updateStatus(`Game Over - ${winner} wins by checkmate!`, 'success');
+      } else if (game.isDraw()) {
+        updateStatus('Game Over - Draw!', 'info');
+      } else {
+        updateStatus('Game Over!', 'info');
+      }
+      document.getElementById("playBtn").disabled = true;
     } else {
-      statusEl.textContent = (game.turn() === "w") ? "Your turn (White)." : "Bot turn (Black).";
+      document.getElementById("playBtn").disabled = false;
+      if (game.turn() === 'w') {
+        updateStatus('Your turn (White)', 'info');
+      } else {
+        updateStatus('Bot is thinking...', 'thinking');
+      }
     }
-
-    const msgEl = document.getElementById("msg");
-    msgEl.className = isError ? "err" : "ok";
-    msgEl.textContent = msg;
   }
 
-  async function botMove() {
-    // Call your FastAPI endpoint POST /move with current FEN
-    const res = await fetch("/move", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fen: game.fen() })
-    });
-    const data = await res.json();
-    if (!data.move) throw new Error("No 'move' in response: " + JSON.stringify(data));
-    return data.move; // UCI like "e7e5"
+  async function getBotMove() {
+    try {
+      // Use the FastAPI server URL
+      const response = await fetch("http://localhost:8000/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fen: game.fen() })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
+      if (!data.move) {
+        throw new Error("No move returned from bot");
+      }
+      
+      return data.move;
+    } catch (error) {
+      throw new Error(`Bot API error: ${error.message}`);
+    }
+  }
+
+  async function executeBotMove() {
+    if (game.turn() !== 'b' || game.isGameOver()) return;
+    
+    busy = true;
+    updateStatus('Bot is thinking...', 'thinking');
+    
+    try {
+      const botMove = await getBotMove();
+      
+      const move = game.move(botMove, { sloppy: true });
+      
+      if (!move) {
+        updateStatus(`Error: Bot returned illegal move: ${botMove}`, 'error');
+      } else {
+        updateStatus(`Bot played: ${botMove}`, 'success');
+        setTimeout(() => updateUI(), 500);
+      }
+    } catch (error) {
+      updateStatus(error.message, 'error');
+    } finally {
+      busy = false;
+    }
   }
 
   async function playHumanMove() {
     if (busy) return;
+    
     if (game.isGameOver()) {
-      updateUI("Game is over. Hit Reset.", true);
+      updateStatus('Game is over! Click Reset to play again.', 'error');
       return;
     }
-    if (game.turn() !== "w") {
-      updateUI("Not your turn yet.", true);
-      return;
-    }
-
-    const moveStr = document.getElementById("moveInput").value.trim();
-    if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/i.test(moveStr)) {
-      updateUI("Bad move format. Use UCI like e2e4 (optional promotion like e7e8q).", true);
+    
+    if (game.turn() !== 'w') {
+      updateStatus('Wait for the bot to move!', 'error');
       return;
     }
 
-    // Apply your move
+    const moveInput = document.getElementById("moveInput");
+    const moveStr = moveInput.value.trim().toLowerCase();
+    
+    if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(moveStr)) {
+      updateStatus('Invalid format! Use UCI notation like e2e4', 'error');
+      return;
+    }
+
     const move = game.move(moveStr, { sloppy: true });
-    if (move === null) {
-      updateUI("Illegal move: " + moveStr, true);
+    
+    if (!move) {
+      updateStatus(`Illegal move: ${moveStr}`, 'error');
       return;
     }
 
-    document.getElementById("moveInput").value = "";
-    updateUI("You played " + moveStr);
+    moveInput.value = '';
+    updateStatus(`You played: ${moveStr}`, 'success');
+    updateUI();
 
-    // Bot replies
-    busy = true;
-    try {
-      const botUci = await botMove();
-      const botApplied = game.move(botUci, { sloppy: true });
-      if (botApplied === null) {
-        updateUI("Bot returned illegal move: " + botUci, true);
-      } else {
-        updateUI("Bot played " + botUci);
-      }
-    } catch (e) {
-      updateUI("Bot request failed: " + e.message, true);
-    } finally {
-      busy = false;
+    if (!game.isGameOver()) {
+      await executeBotMove();
     }
   }
 
   function resetGame() {
     game.reset();
     busy = false;
-    document.getElementById("moveInput").value = "";
-    updateUI("Reset.");
+    document.getElementById("moveInput").value = '';
+    updateUI();
+    updateStatus('New game started!', 'success');
   }
 
   document.getElementById("playBtn").addEventListener("click", playHumanMove);
   document.getElementById("resetBtn").addEventListener("click", resetGame);
   document.getElementById("moveInput").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") playHumanMove();
+    if (e.key === 'Enter') playHumanMove();
   });
 
-  updateUI("Ready.");
+  // Initialize
+  updateUI();
+  updateStatus('Ready! Enter your move.', 'success');
 </script>
+</body>
+</html> -->
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Chess Bot Test</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <style>
+    body { font-family: monospace; padding: 20px; max-width: 800px; margin: 0 auto; }
+    #board { background: #222; color: #0f0; padding: 15px; font-size: 14px; white-space: pre; }
+    input, button { padding: 8px; margin: 10px 5px; font-size: 14px; }
+    #status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+    .error { background: #fdd; color: #c00; }
+    .success { background: #dfd; color: #060; }
+  </style>
+</head>
+<body>
+  <h2>Chess Bot Test</h2>
+  <pre id="board"></pre>
+  <input id="move" placeholder="e2e4" />
+  <button onclick="playMove()">Play</button>
+  <button onclick="reset()">Reset</button>
+  <div id="status"></div>
+
+  <script>
+    var game = new Chess();
+    
+    function draw() {
+      var board = game.ascii();
+      document.getElementById('board').textContent = board;
+    }
+    
+    function playMove() {
+      var input = document.getElementById('move');
+      var moveStr = input.value.trim();
+      
+      console.log("Attempting move:", moveStr);
+      
+      var result = game.move(moveStr, { sloppy: true });
+      
+      if (result === null) {
+        document.getElementById('status').innerHTML = 'Illegal move!';
+        document.getElementById('status').className = 'error';
+        return;
+      }
+      
+      input.value = '';
+      draw();
+      document.getElementById('status').innerHTML = 'You played: ' + moveStr;
+      document.getElementById('status').className = 'success';
+      
+      // Get bot move
+      setTimeout(function() {
+        getBotMove();
+      }, 500);
+    }
+    
+    function getBotMove() {
+      fetch('http://localhost:8000/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fen: game.fen() })
+      })
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        console.log("Bot response:", data);
+        
+        if (data.move) {
+          var result = game.move(data.move, { sloppy: true });
+          if (result) {
+            draw();
+            document.getElementById('status').innerHTML = 'Bot played: ' + data.move;
+            document.getElementById('status').className = 'success';
+          } else {
+            document.getElementById('status').innerHTML = 'Bot returned illegal move: ' + data.move;
+            document.getElementById('status').className = 'error';
+          }
+        } else {
+          document.getElementById('status').innerHTML = 'Error: ' + (data.error || 'No move returned');
+          document.getElementById('status').className = 'error';
+        }
+      })
+      .catch(function(err) {
+        console.error("Fetch error:", err);
+        document.getElementById('status').innerHTML = 'Network error: ' + err.message;
+        document.getElementById('status').className = 'error';
+      });
+    }
+    
+    function reset() {
+      game.reset();
+      draw();
+      document.getElementById('move').value = '';
+      document.getElementById('status').innerHTML = '';
+    }
+    
+    draw();
+  </script>
 </body>
 </html>

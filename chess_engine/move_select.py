@@ -1,10 +1,15 @@
-# engine/engine.py
+# chess_engine/move_select.py
 import chess
 import torch
-from chess_engine.chess_model import model, board_to_tensor
+from chess_engine.chess_model import PolicyNetwork, MOVE_TO_INDEX, board_to_tensor
 from chess_engine.move_mask import select_legal_move
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Load the model once when module is imported
+model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
+model.load_state_dict(torch.load("policy_net.pt", map_location=device, weights_only=True))
+model.eval()
 
 def get_best_move(fen: str) -> str:
     board = chess.Board(fen)

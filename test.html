@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Chess Bot Test</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <style>
+    body { font-family: monospace; padding: 20px; max-width: 800px; margin: 0 auto; }
+    #board { background: #222; color: #0f0; padding: 15px; font-size: 14px; white-space: pre; }
+    input, button { padding: 8px; margin: 10px 5px; font-size: 14px; }
+    #status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+    .error { background: #fdd; color: #c00; }
+    .success { background: #dfd; color: #060; }
+  </style>
+</head>
+<body>
+  <h2>Chess Bot Test</h2>
+  <pre id="board"></pre>
+  <input id="move" placeholder="e2e4" />
+  <button onclick="playMove()">Play</button>
+  <button onclick="reset()">Reset</button>
+  <div id="status"></div>
+
+  <script>
+    var game = new Chess();
+    
+    function draw() {
+      var board = game.ascii();
+      document.getElementById('board').textContent = board;
+    }
+    
+    function playMove() {
+      var input = document.getElementById('move');
+      var moveStr = input.value.trim();
+      
+      console.log("Attempting move:", moveStr);
+      
+      var result = game.move(moveStr, { sloppy: true });
+      
+      if (result === null) {
+        document.getElementById('status').innerHTML = 'Illegal move!';
+        document.getElementById('status').className = 'error';
+        return;
+      }
+      
+      input.value = '';
+      draw();
+      document.getElementById('status').innerHTML = 'You played: ' + moveStr;
+      document.getElementById('status').className = 'success';
+      
+      // Get bot move
+      setTimeout(function() {
+        getBotMove();
+      }, 500);
+    }
+    
+    function getBotMove() {
+      fetch('http://localhost:8000/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fen: game.fen() })
+      })
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        console.log("Bot response:", data);
+        
+        if (data.move) {
+          var result = game.move(data.move, { sloppy: true });
+          if (result) {
+            draw();
+            document.getElementById('status').innerHTML = 'Bot played: ' + data.move;
+            document.getElementById('status').className = 'success';
+          } else {
+            document.getElementById('status').innerHTML = 'Bot returned illegal move: ' + data.move;
+            document.getElementById('status').className = 'error';
+          }
+        } else {
+          document.getElementById('status').innerHTML = 'Error: ' + (data.error || 'No move returned');
+          document.getElementById('status').className = 'error';
+        }
+      })
+      .catch(function(err) {
+        console.error("Fetch error:", err);
+        document.getElementById('status').innerHTML = 'Network error: ' + err.message;
+        document.getElementById('status').className = 'error';
+      });
+    }
+    
+    function reset() {
+      game.reset();
+      draw();
+      document.getElementById('move').value = '';
+      document.getElementById('status').innerHTML = '';
+    }
+    
+    draw();
+  </script>
+</body>
+</html>
