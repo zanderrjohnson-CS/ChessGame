@@ -202,7 +202,7 @@ print(data["X"].shape, data["y"].shape, data["M"].shape)
 # ===============================
 # DEBUG: LIMIT DATASET SIZE
 # ===============================
-MAX_EXAMPLES = 2_000   # try 2_000 if still slow
+MAX_EXAMPLES = 50_000   
 
 X = data["X"][:MAX_EXAMPLES]
 y = data["y"][:MAX_EXAMPLES]
@@ -258,19 +258,30 @@ class PolicyNetwork(nn.Module):
     def __init__(self, num_moves):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(16, 64, 3, padding=1),
+            nn.Conv2d(16, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Conv2d(64, 64, 3, padding=1),
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Conv2d(64, 128, 3, padding=1),
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.Conv2d(256, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(),
         )
-        self.fc = nn.Linear(128 * 8 * 8, num_moves)
+        self.fc = nn.Sequential(
+            nn.Linear(256 * 8 * 8, 1024),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(1024, num_moves)
+        )
 
     def forward(self, x):
         x = self.conv(x)
         x = x.view(x.size(0), -1)
-        return self.fc(x)   # logits
+        return self.fc(x)
 
 
 # ===============================
@@ -284,7 +295,7 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 print("Dataset size:", len(dataset))
 def train():
     # everything in your training loop goes here
-    for epoch in range(20):
+    for epoch in range(50):
         total_loss = 0.0
         print(f"Starting epoch {epoch+1}...")
 
