@@ -21,6 +21,7 @@ from torch.utils.data import Dataset, DataLoader
 # ===============================
 COLLECT_DATA = False        # <-- SET TRUE ONLY WHEN YOU WANT TO RE-FETCH GAMES
 DATASET_PATH = "chess_policy_2024_elite.npz"
+VALUE_DATASET_PATH = "chess_value_2024_elite.npz"
 
 
 HEADERS = {
@@ -138,43 +139,45 @@ def legal_move_mask(board):
     return mask
 
 
-
-def parse_game_to_examples(pgn_text):
+def parse_game_to_policy_examples(pgn_text, start_move=0, end_move=999):
+    """Parse game for policy network with move range"""
     examples = []
     game = chess.pgn.read_game(io.StringIO(pgn_text))
     if game is None:
         return examples
 
     board = game.board()
+    move_num = 0
 
     for move in game.mainline_moves():
-        board_tensor = board_to_tensor(board)
-        move_str = move.uci()
+        if start_move <= move_num < end_move:
+            board_tensor = board_to_tensor(board)
+            move_str = move.uci()
 
-        if move_str in MOVE_TO_INDEX:
-            mask = legal_move_mask(board)
-            examples.append((board_tensor, MOVE_TO_INDEX[move_str], mask))
+            if move_str in MOVE_TO_INDEX:
+                mask = legal_move_mask(board)
+                examples.append((board_tensor, MOVE_TO_INDEX[move_str], mask))
 
         board.push(move)
+        move_num += 1
 
     return examples
 
 
-def save_training_examples(examples, path):
+def save_policy_examples(examples, path):
     X = np.stack([e[0] for e in examples])
     y = np.array([e[1] for e in examples])
     M = np.stack([e[2] for e in examples])
 
     np.savez_compressed(path, X=X, y=y, M=M)
-    print(f"Saved {len(y)} examples to {path}")
-
+    print(f"Saved {len(y)} policy examples to {path}")
 
 
 # ===============================
-# DATA COLLECTION (OPTION B)
+# DATA COLLECTION
 # ===============================
 if COLLECT_DATA:
-    all_examples = []
+    all_policy_examples = []
 
     for player in PLAYERS:
         print(f"Fetching {player}...")
@@ -185,9 +188,18 @@ if COLLECT_DATA:
             games = fetch_games_from_archive(archive)
             for game in games:
                 pgn = game.get("pgn", "")
-                all_examples.extend(parse_game_to_examples(pgn))
+                
+                # Policy examples - emphasize endgame
+                # 15k early game (moves 0-15)
+                early_examples = parse_game_to_policy_examples(pgn, start_move=0, end_move=15)
+                if early_examples and len(all_policy_examples) < 15000:
+                    all_policy_examples.extend(early_examples)
+                
+                # 60k mid to endgame (moves 15-60) - more emphasis on late game
+                late_examples = parse_game_to_policy_examples(pgn, start_move=15, end_move=60)
+                all_policy_examples.extend(late_examples)
 
-    save_training_examples(all_examples, DATASET_PATH)
+    save_policy_examples(all_policy_examples, DATASET_PATH)
 
 else:
     print("Skipping data collection.")
@@ -196,18 +208,16 @@ else:
 # ===============================
 # Dataset + Dataloader
 # ===============================
-data = np.load(DATASET_PATH)
-print(data["X"].shape, data["y"].shape, data["M"].shape)
+policy_data = np.load(DATASET_PATH)
+print("Policy data:", policy_data["X"].shape, policy_data["y"].shape)
 
-# ===============================
-# DEBUG: LIMIT DATASET SIZE
-# ===============================
-MAX_EXAMPLES = 50_000   
+# Use more training examples
+MAX_POLICY_EXAMPLES = 100_000  # Increased from 40k
 
-X = data["X"][:MAX_EXAMPLES]
-y = data["y"][:MAX_EXAMPLES]
+X_policy = policy_data["X"][:MAX_POLICY_EXAMPLES]
+y_policy = policy_data["y"][:MAX_POLICY_EXAMPLES]
 
-print(f"Using {len(y)} training examples for debugging")
+print(f"Using {len(y_policy)} policy training examples")
 
 
 class ChessPolicyDataset(Dataset):
@@ -222,107 +232,153 @@ class ChessPolicyDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
-dataset = ChessPolicyDataset(X, y)
-print("Dataset size:", len(dataset))
-dataloader = DataLoader(
-    dataset,
-    batch_size=64,
+policy_dataset = ChessPolicyDataset(X_policy, y_policy)
+policy_dataloader = DataLoader(
+    policy_dataset,
+    batch_size=32,  # Increased batch size for faster training
     shuffle=True,
-    num_workers=0   # IMPORTANT on macOS
+    num_workers=0
 )
 
-@torch.no_grad()
-def select_move(model, board):
-    model.eval()
-
-    x = torch.tensor(
-        board_to_tensor(board),
-        dtype=torch.float32
-    ).unsqueeze(0).to(device)
-
-    logits = model(x).squeeze(0)
-
-    mask = legal_move_mask(board, device)
-    masked_logits = logits + mask
-
-    probs = torch.softmax(masked_logits, dim=0)
-
-    move_idx = torch.argmax(probs).item()
-    return chess.Move.from_uci(INDEX_TO_MOVE[move_idx])
-
 
 # ===============================
-# Policy Network
+# IMPROVED Policy Network (Deeper, Residual Blocks)
 # ===============================
+class ResidualBlock(nn.Module):
+    """Residual block like AlphaZero"""
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+        
+    def forward(self, x):
+        residual = x
+        out = torch.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += residual  # Skip connection
+        out = torch.relu(out)
+        return out
+
+
 class PolicyNetwork(nn.Module):
     def __init__(self, num_moves):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(16, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 256, 3, padding=1),
+        
+        # Initial convolution
+        self.input_conv = nn.Sequential(
+            nn.Conv2d(16, 256, 3, padding=1),
             nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.Conv2d(256, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
+            nn.ReLU()
         )
-        self.fc = nn.Sequential(
-            nn.Linear(256 * 8 * 8, 1024),
+        
+        # Residual tower (like AlphaZero)
+        self.residual_blocks = nn.Sequential(
+            ResidualBlock(256),
+            ResidualBlock(256),
+            ResidualBlock(256),
+            ResidualBlock(256),
+            ResidualBlock(256),
+            ResidualBlock(256),  # 6 residual blocks
+        )
+        
+        # Policy head
+        self.policy_conv = nn.Sequential(
+            nn.Conv2d(256, 128, 1),  # 1x1 conv
+            nn.BatchNorm2d(128),
+            nn.ReLU()
+        )
+        
+        self.policy_fc = nn.Sequential(
+            nn.Linear(128 * 8 * 8, 2048),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(1024, num_moves)
+            nn.Linear(2048, num_moves)
         )
 
     def forward(self, x):
-        x = self.conv(x)
+        x = self.input_conv(x)
+        x = self.residual_blocks(x)
+        x = self.policy_conv(x)
         x = x.view(x.size(0), -1)
-        return self.fc(x)
+        return self.policy_fc(x)
 
 
 # ===============================
-# Training Loop
+# Training Loop with Learning Rate Scheduling
 # ===============================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Training on: {device}")
 
-model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
-print("Dataset size:", len(dataset))
+policy_model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
+policy_criterion = nn.CrossEntropyLoss()
+policy_optimizer = optim.Adam(policy_model.parameters(), lr=2e-3)  # Higher initial LR
+
+# Learning rate scheduler - reduce LR when loss plateaus
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    policy_optimizer, 
+    mode='min', 
+    factor=0.5, 
+    patience=5, 
+    verbose=True
+)
+
+
 def train():
-    # everything in your training loop goes here
-    for epoch in range(50):
+    print("\n=== Training Improved Policy Network ===")
+    print(f"Network parameters: {sum(p.numel() for p in policy_model.parameters()):,}")
+    
+    best_loss = float('inf')
+    
+    for epoch in range(100):  # 100 epochs as requested
         total_loss = 0.0
-        print(f"Starting epoch {epoch+1}...")
-
-        for boards, moves in dataloader:
+        policy_model.train()
+        
+        for boards, moves in policy_dataloader:
             boards = boards.to(device)
             moves = moves.to(device)
             
-
-            optimizer.zero_grad()
-            logits = model(boards)
+            policy_optimizer.zero_grad()
+            logits = policy_model(boards)
             
-            loss = criterion(logits, moves)
+            loss = policy_criterion(logits, moves)
             loss.backward()
-            optimizer.step()
-
-
+            
+            # Gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(policy_model.parameters(), max_norm=1.0)
+            
+            policy_optimizer.step()
             total_loss += loss.item()
 
-        print(f"Epoch {epoch+1} | Loss: {total_loss / len(dataloader):.4f}")    
-
-    torch.save(model.state_dict(), "policy_net.pt")
+        avg_loss = total_loss / len(policy_dataloader)
+        print(f"Epoch {epoch+1}/100 | Loss: {avg_loss:.4f} | LR: {policy_optimizer.param_groups[0]['lr']:.6f}")
+        
+        # Adjust learning rate based on loss
+        scheduler.step(avg_loss)
+        
+        # Save best model
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            torch.save(policy_model.state_dict(), "policy_net_best.pt")
+            print(f"  → New best model saved! (loss: {best_loss:.4f})")
+    
+    # Save final model
+    torch.save(policy_model.state_dict(), "policy_net.pt")
+    print("\n✓ Training complete!")
+    print(f"Final model saved as policy_net.pt")
+    print(f"Best model saved as policy_net_best.pt (loss: {best_loss:.4f})")
 
 
 if __name__ == "__main__":
-    train() 
+    train()
 
-model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
-model.load_state_dict(torch.load("policy_net.pt", map_location=device, weights_only=True))
-model.eval()
 
+# Load model for inference
+policy_model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
+try:
+    policy_model.load_state_dict(torch.load("policy_net.pt", map_location=device, weights_only=True))
+    policy_model.eval()
+    print("Loaded policy_net.pt")
+except:
+    print("No policy_net.pt found - train first!")
