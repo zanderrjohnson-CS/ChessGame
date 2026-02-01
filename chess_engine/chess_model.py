@@ -19,11 +19,15 @@ from torch.utils.data import Dataset, DataLoader
 # ===============================
 # CONFIG
 # ===============================
-COLLECT_DATA = False        # <-- SET TRUE ONLY WHEN YOU WANT TO RE-FETCH GAMES
+
+#collect data flag
+COLLECT_DATA = False        
+
+#initialize dataset names
 DATASET_PATH = "chess_policy_2024_elite.npz"
 VALUE_DATASET_PATH = "chess_value_2024_elite.npz"
 
-
+#for data fetching 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; ChessAI/1.0)"
 }
@@ -32,6 +36,8 @@ HEADERS = {
 # ===============================
 # Board → Tensor Encoding
 # ===============================
+
+#struct for encoding board as tensor
 PIECE_TO_CHANNEL = {
     chess.PAWN: 0,
     chess.KNIGHT: 1,
@@ -42,21 +48,29 @@ PIECE_TO_CHANNEL = {
 }
 
 def board_to_tensor(board: chess.Board):
+    #initialize tensor of 16x8x8 for 16 layers and 8x8 board. 16 layers for pieces, turn, castling rights, en passant
     tensor = np.zeros((16, 8, 8), dtype=np.float32)
 
+    #64 iterations
     for square in chess.SQUARES:
+        #piece at square
         piece = board.piece_at(square)
+        #if there is a piece on that square
         if piece:
+            #gets piece nunmber for encoding
             channel = PIECE_TO_CHANNEL[piece.piece_type]
+            #white = 0-5, black = 6-11
             if piece.color == chess.BLACK:
                 channel += 6
-
+            #row and column for tensor
             row = 7 - chess.square_rank(square)
             col = chess.square_file(square)
+            #3d tensor for convolutional NN. Conv nn recognizes patterns. Uses layers to combine patterns. 
             tensor[channel, row, col] = 1
-
+    #
     tensor[12, :, :] = int(board.turn)
 
+    #Other channeling info. Need to specifiy queenside/kingside for both colors. 
     if board.has_kingside_castling_rights(chess.WHITE):
         tensor[13, :, :] = 1
     if board.has_queenside_castling_rights(chess.WHITE):
