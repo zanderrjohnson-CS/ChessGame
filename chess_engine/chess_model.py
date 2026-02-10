@@ -34,7 +34,7 @@ HEADERS = {
 
 
 # ===============================
-# Board → Tensor Encoding
+# Board → 16x8x8 Tensor Encoding
 # ===============================
 
 #struct for encoding board as tensor
@@ -70,13 +70,13 @@ def board_to_tensor(board: chess.Board):
     #
     tensor[12, :, :] = int(board.turn)
 
-    #Other channeling info. Need to specifiy queenside/kingside for both colors. 
+    #Other board state encoding. Need to specifiy queenside/kingside for both colors. 
     if board.has_kingside_castling_rights(chess.WHITE):
         tensor[13, :, :] = 1
     if board.has_queenside_castling_rights(chess.WHITE):
         tensor[13, :, :] = 1
     if board.has_kingside_castling_rights(chess.BLACK):
-        tensor[14, :, :] = 1
+        tensor[14, :, :] = 1 
     if board.has_queenside_castling_rights(chess.BLACK):
         tensor[14, :, :] = 1
 
@@ -91,6 +91,8 @@ def board_to_tensor(board: chess.Board):
 # ===============================
 # Move Indexing
 # ===============================
+
+#converts all possible moves to indices for NN (and back)
 def generate_move_to_index():
     files = "abcdefgh"
     ranks = "12345678"
@@ -116,6 +118,8 @@ MOVE_TO_INDEX, INDEX_TO_MOVE = generate_move_to_index()
 # ===============================
 # Chess.com API
 # ===============================
+
+# fetching games from chess.com for data collection. Has information on game accuracy, who won, moves, etc. Need to still clean data.
 BASE_URL = "https://api.chess.com/pub/player"
 
 PLAYERS = [
@@ -144,38 +148,86 @@ def filter_archives_by_year(archives, year):
 # PGN → Training Examples
 # ===============================
 
+
 def legal_move_mask(board):
+    #set all moves to -1e9 (illegal)
     mask = np.full(len(MOVE_TO_INDEX), -1e9, dtype=np.float32)
     for move in board.legal_moves:
+        #move.uci() returns i.e. e2e4 
+
         uci = move.uci()
         if uci in MOVE_TO_INDEX:
+            #move_to_index maps uci to index and then sets that index to 0 (legal)
             mask[MOVE_TO_INDEX[uci]] = 0.0
+    #mask is applied to NN output logits to filter illegal moves
     return mask
 
 
 def parse_game_to_policy_examples(pgn_text, start_move=0, end_move=999):
+
     """Parse game for policy network with move range"""
+    #list for storing examples
     examples = []
+    #read pgn game. cleans game info and returns move history of game.
     game = chess.pgn.read_game(io.StringIO(pgn_text))
+    #if no game, return empty list
     if game is None:
         return examples
-
+    #starting board position
     board = game.board()
     move_num = 0
 
+    #iterate through all possible moves
     for move in game.mainline_moves():
+        #specify range for dynamic training example makeup (i.e. 70% endgame, 30% opening)
         if start_move <= move_num < end_move:
+            #convert board to tensor
             board_tensor = board_to_tensor(board)
+            #get move in uci format
             move_str = move.uci()
-
+            #if move is in 
             if move_str in MOVE_TO_INDEX:
                 mask = legal_move_mask(board)
+                #Could maybe remove mask to save 5x storage.
                 examples.append((board_tensor, MOVE_TO_INDEX[move_str], mask))
 
         board.push(move)
         move_num += 1
-
+    #examples is huge list (2.4 GBs for 100k examples)
     return examples
+
+##################################################################
+###### Examples for how for how data is structured.  #############
+##################################################################
+
+# ##### np.stack example  ######
+# X = [
+#     array(16x8x8),  # board 1
+#     array(16x8x8),  # board 2
+#     array(16x8x8),  # board 3
+# ]
+# np.stack(X)  # → array(3, 16, 8, 8)  — stacks them into one big array
+
+
+# ###### np.array example  ######
+# y = [1234, 5678, 91]
+# np.array(y)  # → array([1234, 5678, 91])
+
+# ##### examples varible structure  ######
+# all_policy_examples = [
+#     (board_tensor_1, move_idx_1, mask_1),  # Position 1 from game 1
+#     (board_tensor_2, move_idx_2, mask_2),  # Position 2 from game 1
+#     (board_tensor_3, move_idx_3, mask_3),  # Position 3 from game 1
+#     ...
+#     (board_tensor_N, move_idx_N, mask_N),  # Position from game 500
+# ]
+
+# ##### save_policy_examples function  ######
+# X = np.stack([e[0] for e in examples])  # All board tensors → (100000, 16, 8, 8)
+# y = np.array([e[1] for e in examples])  # All move indices  → (100000,)
+# M = np.stack([e[2] for e in examples])  # All masks         → (100000, 5000)
+
+# np.savez_compressed(path, X=X, y=y, M=M)  # Save to disk
 
 
 def save_policy_examples(examples, path):
@@ -222,11 +274,17 @@ else:
 # ===============================
 # Dataset + Dataloader
 # ===============================
+# policy_data is like {"X": ..., "y": ..., "M": ...}
 policy_data = np.load(DATASET_PATH)
 print("Policy data:", policy_data["X"].shape, policy_data["y"].shape)
+#"X" is the board tensor (board input), "y" is the move (correct move), "M" is the legal move masks
 
-# Use more training examples
-MAX_POLICY_EXAMPLES = 100_000  # Increased from 40k
+######################################################################################################
+### M is not used for training (but could be used for inference to filter illegal moves from NN output?)
+######################################################################################################
+
+
+MAX_POLICY_EXAMPLES = 100_000  # Increased from 40k. made up of 15k early game and 60k mid to endgame examples, but can adjust as needed.
 
 X_policy = policy_data["X"][:MAX_POLICY_EXAMPLES]
 y_policy = policy_data["y"][:MAX_POLICY_EXAMPLES]
@@ -245,13 +303,18 @@ class ChessPolicyDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
+##### Batch size #####
+# higher batch size can speed up training but requires more memory. 32 is a common choice for CNNs, but can adjust based on hardware.
+# higher batch size has more stable gradients but may get stuck in local minima. lower batch size has more noisy gradients which can help escape local minima but may require more epochs to converge.
+##############################################################################
+
 
 policy_dataset = ChessPolicyDataset(X_policy, y_policy)
 policy_dataloader = DataLoader(
     policy_dataset,
     batch_size=32,  # Increased batch size for faster training
-    shuffle=True,
-    num_workers=0
+    shuffle=True, #randomize order of examples each epoch for better generalization
+    num_workers=0 #Could set to >0 for faster data loading, but may cause issues on some platforms
 )
 
 
@@ -338,7 +401,10 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(
     verbose=True
 )
 
-
+### Training:
+# model guesses move then calculate loss based off how far away from correct move. 
+# Once loss is calculated, backpropagate through network to update parameters based on how much each parameter contributed to the error.
+#uodate parameters with optimizer. Adam is a good default choice for CNNs.
 def train():
     print("\n=== Training Improved Policy Network ===")
     print(f"Network parameters: {sum(p.numel() for p in policy_model.parameters()):,}")
