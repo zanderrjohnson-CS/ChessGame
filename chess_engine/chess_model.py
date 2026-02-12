@@ -239,88 +239,7 @@ def save_policy_examples(examples, path):
     print(f"Saved {len(y)} policy examples to {path}")
 
 
-# ===============================
-# DATA COLLECTION
-# ===============================
-if COLLECT_DATA:
-    all_policy_examples = []
 
-    for player in PLAYERS:
-        print(f"Fetching {player}...")
-        archives = get_available_archives(player)
-        archives = filter_archives_by_year(archives, 2024)
-
-        for archive in archives:
-            games = fetch_games_from_archive(archive)
-            for game in games:
-                pgn = game.get("pgn", "")
-                
-                # Policy examples - emphasize endgame
-                # 15k early game (moves 0-15)
-                early_examples = parse_game_to_policy_examples(pgn, start_move=0, end_move=15)
-                if early_examples and len(all_policy_examples) < 15000:
-                    all_policy_examples.extend(early_examples)
-                
-                # 60k mid to endgame (moves 15-60) - more emphasis on late game
-                late_examples = parse_game_to_policy_examples(pgn, start_move=15, end_move=60)
-                all_policy_examples.extend(late_examples)
-
-    save_policy_examples(all_policy_examples, DATASET_PATH)
-
-else:
-    print("Skipping data collection.")
-
-
-# ===============================
-# Dataset + Dataloader
-# ===============================
-# policy_data is like {"X": ..., "y": ..., "M": ...}
-policy_data = np.load(DATASET_PATH)
-print("Policy data:", policy_data["X"].shape, policy_data["y"].shape)
-#"X" is the board tensor (board input), "y" is the move (correct move), "M" is the legal move masks
-
-######################################################################################################
-### M is not used for training (but could be used for inference to filter illegal moves from NN output?)
-######################################################################################################
-
-
-MAX_POLICY_EXAMPLES = 100_000  # Increased from 40k. made up of 15k early game and 60k mid to endgame examples, but can adjust as needed.
-
-X_policy = policy_data["X"][:MAX_POLICY_EXAMPLES]
-y_policy = policy_data["y"][:MAX_POLICY_EXAMPLES]
-
-print(f"Using {len(y_policy)} policy training examples")
-
-
-class ChessPolicyDataset(Dataset):
-    def __init__(self, X, y):
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.long)
-
-    def __len__(self):
-        return len(self.y)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
-
-##### Batch size #####
-# higher batch size can speed up training but requires more memory. 32 is a common choice for CNNs, but can adjust based on hardware.
-# higher batch size has more stable gradients but may get stuck in local minima. lower batch size has more noisy gradients which can help escape local minima but may require more epochs to converge.
-##############################################################################
-
-
-policy_dataset = ChessPolicyDataset(X_policy, y_policy)
-policy_dataloader = DataLoader(
-    policy_dataset,
-    batch_size=32,  # Increased batch size for faster training
-    shuffle=True, #randomize order of examples each epoch for better generalization
-    num_workers=0 #Could set to >0 for faster data loading, but may cause issues on some platforms
-)
-
-
-# ===============================
-# IMPROVED Policy Network (Deeper, Residual Blocks)
-# ===============================
 class ResidualBlock(nn.Module):
     """Residual block like AlphaZero"""
     def __init__(self, channels):
@@ -337,128 +256,216 @@ class ResidualBlock(nn.Module):
         out += residual  # Skip connection
         out = torch.relu(out)
         return out
-
-
 class PolicyNetwork(nn.Module):
-    def __init__(self, num_moves):
-        super().__init__()
-        
-        # Initial convolution
-        self.input_conv = nn.Sequential(
-            nn.Conv2d(16, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU()
-        )
-        
-        # Residual tower (like AlphaZero)
-        self.residual_blocks = nn.Sequential(
-            ResidualBlock(256),
-            ResidualBlock(256),
-            ResidualBlock(256),
-            ResidualBlock(256),
-            ResidualBlock(256),
-            ResidualBlock(256),  # 6 residual blocks
-        )
-        
-        # Policy head
-        self.policy_conv = nn.Sequential(
-            nn.Conv2d(256, 128, 1),  # 1x1 conv
-            nn.BatchNorm2d(128),
-            nn.ReLU()
-        )
-        
-        self.policy_fc = nn.Sequential(
-            nn.Linear(128 * 8 * 8, 2048),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(2048, num_moves)
-        )
-
-    def forward(self, x):
-        x = self.input_conv(x)
-        x = self.residual_blocks(x)
-        x = self.policy_conv(x)
-        x = x.view(x.size(0), -1)
-        return self.policy_fc(x)
-
-
-# ===============================
-# Training Loop with Learning Rate Scheduling
-# ===============================
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Training on: {device}")
-
-policy_model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
-policy_criterion = nn.CrossEntropyLoss()
-policy_optimizer = optim.Adam(policy_model.parameters(), lr=2e-3)  # Higher initial LR
-
-# Learning rate scheduler - reduce LR when loss plateaus
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-    policy_optimizer, 
-    mode='min', 
-    factor=0.5, 
-    patience=5, 
-    verbose=True
-)
-
-### Training:
-# model guesses move then calculate loss based off how far away from correct move. 
-# Once loss is calculated, backpropagate through network to update parameters based on how much each parameter contributed to the error.
-#uodate parameters with optimizer. Adam is a good default choice for CNNs.
-def train():
-    print("\n=== Training Improved Policy Network ===")
-    print(f"Network parameters: {sum(p.numel() for p in policy_model.parameters()):,}")
-    
-    best_loss = float('inf')
-    
-    for epoch in range(100):  # 100 epochs as requested
-        total_loss = 0.0
-        policy_model.train()
-        
-        for boards, moves in policy_dataloader:
-            boards = boards.to(device)
-            moves = moves.to(device)
+        def __init__(self, num_moves):
+            super().__init__()
             
-            policy_optimizer.zero_grad()
-            logits = policy_model(boards)
+            # Initial convolution
+            self.input_conv = nn.Sequential(
+                nn.Conv2d(16, 256, 3, padding=1),
+                nn.BatchNorm2d(256),
+                nn.ReLU()
+            )
             
-            loss = policy_criterion(logits, moves)
-            loss.backward()
+            # Residual tower (like AlphaZero)
+            self.residual_blocks = nn.Sequential(
+                ResidualBlock(256),
+                ResidualBlock(256),
+                ResidualBlock(256),
+                ResidualBlock(256),
+                ResidualBlock(256),
+                ResidualBlock(256),  # 6 residual blocks
+            )
             
-            # Gradient clipping for stability
-            torch.nn.utils.clip_grad_norm_(policy_model.parameters(), max_norm=1.0)
+            # Policy head
+            self.policy_conv = nn.Sequential(
+                nn.Conv2d(256, 128, 1),  # 1x1 conv
+                nn.BatchNorm2d(128),
+                nn.ReLU()
+            )
             
-            policy_optimizer.step()
-            total_loss += loss.item()
+            self.policy_fc = nn.Sequential(
+                nn.Linear(128 * 8 * 8, 2048),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(2048, num_moves)
+            )
 
-        avg_loss = total_loss / len(policy_dataloader)
-        print(f"Epoch {epoch+1}/100 | Loss: {avg_loss:.4f} | LR: {policy_optimizer.param_groups[0]['lr']:.6f}")
-        
-        # Adjust learning rate based on loss
-        scheduler.step(avg_loss)
-        
-        # Save best model
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            torch.save(policy_model.state_dict(), "policy_net_best.pt")
-            print(f"  → New best model saved! (loss: {best_loss:.4f})")
-    
-    # Save final model
-    torch.save(policy_model.state_dict(), "policy_net.pt")
-    print("\n✓ Training complete!")
-    print(f"Final model saved as policy_net.pt")
-    print(f"Best model saved as policy_net_best.pt (loss: {best_loss:.4f})")
-
-
+        def forward(self, x):
+            x = self.input_conv(x)
+            x = self.residual_blocks(x)
+            x = self.policy_conv(x)
+            x = x.view(x.size(0), -1)
+            return self.policy_fc(x)
 if __name__ == "__main__":
+    
+        
+
+    # ===============================
+    # DATA COLLECTION
+    # ===============================
+    if COLLECT_DATA:
+        all_policy_examples = []
+
+        for player in PLAYERS:
+            print(f"Fetching {player}...")
+            archives = get_available_archives(player)
+            archives = filter_archives_by_year(archives, 2024)
+
+            for archive in archives:
+                games = fetch_games_from_archive(archive)
+                for game in games:
+                    pgn = game.get("pgn", "")
+                    
+                    # Policy examples - emphasize endgame
+                    # 15k early game (moves 0-15)
+                    early_examples = parse_game_to_policy_examples(pgn, start_move=0, end_move=15)
+                    if early_examples and len(all_policy_examples) < 15000:
+                        all_policy_examples.extend(early_examples)
+                    
+                    # 60k mid to endgame (moves 15-60) - more emphasis on late game
+                    late_examples = parse_game_to_policy_examples(pgn, start_move=15, end_move=60)
+                    all_policy_examples.extend(late_examples)
+
+        save_policy_examples(all_policy_examples, DATASET_PATH)
+
+    else:
+        print("Skipping data collection.")
+
+
+
+    # ===============================
+    # Dataset + Dataloader
+    # ===============================
+    # policy_data is like {"X": ..., "y": ..., "M": ...}
+    policy_data = np.load(DATASET_PATH)
+    print("Policy data:", policy_data["X"].shape, policy_data["y"].shape)
+    #"X" is the board tensor (board input), "y" is the move (correct move), "M" is the legal move masks
+
+    ######################################################################################################
+    ### M is not used for training (but could be used for inference to filter illegal moves from NN output?)
+    ######################################################################################################
+
+
+    MAX_POLICY_EXAMPLES = 100_000  # Increased from 40k. made up of 15k early game and 60k mid to endgame examples, but can adjust as needed.
+
+    X_policy = policy_data["X"][:MAX_POLICY_EXAMPLES]
+    y_policy = policy_data["y"][:MAX_POLICY_EXAMPLES]
+
+    print(f"Using {len(y_policy)} policy training examples")
+
+
+
+
+    ##### Batch size #####
+    # higher batch size can speed up training but requires more memory. 32 is a common choice for CNNs, but can adjust based on hardware.
+    # higher batch size has more stable gradients but may get stuck in local minima. lower batch size has more noisy gradients which can help escape local minima but may require more epochs to converge.
+    ##############################################################################
+    class ChessPolicyDataset(Dataset):
+        def __init__(self, X, y):
+            self.X = torch.tensor(X, dtype=torch.float32)
+            self.y = torch.tensor(y, dtype=torch.long)
+
+        def __len__(self):
+            return len(self.y)
+
+        def __getitem__(self, idx):
+            return self.X[idx], self.y[idx]
+
+    policy_dataset = ChessPolicyDataset(X_policy, y_policy)
+    policy_dataloader = DataLoader(
+        policy_dataset,
+        batch_size=32,  # Increased batch size for faster training
+        shuffle=True, #randomize order of examples each epoch for better generalization
+        num_workers=0 #Could set to >0 for faster data loading, but may cause issues on some platforms
+    )
+
+
+    # ===============================
+    # IMPROVED Policy Network (Deeper, Residual Blocks)
+    # ===============================
+
+
+
+    # ===============================
+    # Training Loop with Learning Rate Scheduling
+    # ===============================
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}")
+
+    policy_model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
+    policy_criterion = nn.CrossEntropyLoss()
+    policy_optimizer = optim.Adam(policy_model.parameters(), lr=2e-3)  # Higher initial LR
+
+    # Learning rate scheduler - reduce LR when loss plateaus
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        policy_optimizer, 
+        mode='min', 
+        factor=0.5, 
+        patience=5, 
+        verbose=True
+    )
+
+    ### Training:
+    # model guesses move then calculate loss based off how far away from correct move. 
+    # Once loss is calculated, backpropagate through network to update parameters based on how much each parameter contributed to the error.
+    #uodate parameters with optimizer. Adam is a good default choice for CNNs.
+    def train():
+        print("\n=== Training Improved Policy Network ===")
+        print(f"Network parameters: {sum(p.numel() for p in policy_model.parameters()):,}")
+        
+        best_loss = float('inf')
+        
+        for epoch in range(100):  # 100 epochs as requested
+            total_loss = 0.0
+            policy_model.train()
+            
+            for boards, moves in policy_dataloader:
+                boards = boards.to(device)
+                moves = moves.to(device)
+                
+                policy_optimizer.zero_grad()
+                logits = policy_model(boards)
+                
+                loss = policy_criterion(logits, moves)
+                loss.backward()
+                
+                # Gradient clipping for stability
+                torch.nn.utils.clip_grad_norm_(policy_model.parameters(), max_norm=1.0)
+                
+                policy_optimizer.step()
+                total_loss += loss.item()
+
+            avg_loss = total_loss / len(policy_dataloader)
+            print(f"Epoch {epoch+1}/100 | Loss: {avg_loss:.4f} | LR: {policy_optimizer.param_groups[0]['lr']:.6f}")
+            
+            # Adjust learning rate based on loss
+            scheduler.step(avg_loss)
+            
+            # Save best model
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                torch.save(policy_model.state_dict(), "policy_net_best.pt")
+                print(f"  → New best model saved! (loss: {best_loss:.4f})")
+        
+        # Save final model
+        torch.save(policy_model.state_dict(), "policy_net.pt")
+        print("\n✓ Training complete!")
+        print(f"Final model saved as policy_net.pt")
+        print(f"Best model saved as policy_net_best.pt (loss: {best_loss:.4f})")
+
+
+
     train()
 
 
 # Load model for inference
-policy_model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
-try:
-    policy_model.load_state_dict(torch.load("policy_net.pt", map_location=device, weights_only=True))
-    policy_model.eval()
-    print("Loaded policy_net.pt")
-except:
-    print("No policy_net.pt found - train first!")
+load_policy = True  # Set to False if you want to skip loading 
+if load_policy:
+    policy_model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
+    try:
+        policy_model.load_state_dict(torch.load("policy_net.pt", map_location=device, weights_only=True))
+        policy_model.eval()
+        print("Loaded policy_net.pt")
+    except:
+        print("No policy_net.pt found - train first!")
