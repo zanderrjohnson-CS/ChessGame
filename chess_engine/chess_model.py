@@ -458,7 +458,7 @@ if __name__ == "__main__":
 
     train()
 
-
+""" 
 # Load model for inference
 load_policy = True  # Set to False if you want to skip loading 
 if load_policy:
@@ -468,4 +468,4 @@ if load_policy:
         policy_model.eval()
         print("Loaded policy_net.pt")
     except:
-        print("No policy_net.pt found - train first!")
+        print("No policy_net.pt found - train first!") """
