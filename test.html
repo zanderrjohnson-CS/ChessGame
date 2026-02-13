@@ -55,7 +55,7 @@
     }
     
     function getBotMove() {
-      fetch('http://localhost:8000/move', {
+      fetch('/move', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fen: game.fen() })

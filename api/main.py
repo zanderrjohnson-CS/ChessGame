@@ -3,7 +3,21 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from chess_engine.move_select import get_best_move
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from chess_engine.move_select import get_best_move
+
+
+
+
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class MoveRequest(BaseModel):
     fen: str
