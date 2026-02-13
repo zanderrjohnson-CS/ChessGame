@@ -7,7 +7,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load policy network
 policy_model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
-policy_model.load_state_dict(torch.load("policy_net_best.pt", map_location=device, weights_only=True))
+policy_model.load_state_dict(torch.load("policy_net.pt", map_location=device, weights_only=True))
 policy_model.eval()
 print("Loaded policy network")
 
