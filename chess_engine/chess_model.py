@@ -177,7 +177,7 @@ def parse_game_to_policy_examples(pgn_text, start_move=0, end_move=999):
     board = game.board()
     move_num = 0
 
-    #iterate through all possible moves
+    #iterate through all moves of the game
     for move in game.mainline_moves():
         #specify range for dynamic training example makeup (i.e. 70% endgame, 30% opening)
         if start_move <= move_num < end_move:
@@ -185,7 +185,7 @@ def parse_game_to_policy_examples(pgn_text, start_move=0, end_move=999):
             board_tensor = board_to_tensor(board)
             #get move in uci format
             move_str = move.uci()
-            #if move is in 
+            #mostly redundant but good for training stability.
             if move_str in MOVE_TO_INDEX:
                 mask = legal_move_mask(board)
                 #Could maybe remove mask to save 5x storage.
@@ -409,7 +409,7 @@ if __name__ == "__main__":
     ### Training:
     # model guesses move then calculate loss based off how far away from correct move. 
     # Once loss is calculated, backpropagate through network to update parameters based on how much each parameter contributed to the error.
-    #uodate parameters with optimizer. Adam is a good default choice for CNNs.
+    #update parameters with optimizer. Adam is a good default choice for CNNs.
     def train():
         print("\n=== Training Improved Policy Network ===")
         print(f"Network parameters: {sum(p.numel() for p in policy_model.parameters()):,}")
