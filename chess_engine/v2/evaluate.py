@@ -1,0 +1,301 @@
+# ===============================
+# chess_engine/v2/evaluate.py
+# ===============================
+# Static evaluation: "how good is this position, without looking ahead?"
+#
+# Scores are in centipawns (100 = one pawn) and always from the point of view
+# of the side to move. Positive = good for the player whose turn it is.
+# This "side to move" convention is what negamax search expects.
+#
+# Layers (each one can be switched off to measure what it is worth):
+#   1. Material        - piece values
+#   2. Piece-square    - a bonus/penalty for each piece on each square
+#      tables (PSTs)     (knights in the center, pawns pushed, rooks on the 7th...)
+#   3. Tapered eval    - separate middlegame and endgame tables, blended by how
+#                        much material is left on the board
+#   4. Relational      - passed pawns, rooks on open files, king safety, mobility...
+#      features          (see features.py). Weights are hand-picked guesses in
+#                        HAND_WEIGHTS, replaced by learned ones from weights.json
+#                        once tools/tune.py has been run.
+#
+# The tables below are PeSTO's (Ronald Friederich), a well-known set that was
+# tuned automatically from game results, the same technique ("Texel tuning")
+# planned for later in v2.
+# ===============================
+import json
+import os
+
+import chess
+
+from chess_engine.v2.features import FEATURE_NAMES, extract_features
+
+
+# ===============================
+# Piece values (centipawns)
+# ===============================
+# Middlegame and endgame values differ: e.g. knights are worth a bit less in
+# the endgame, rooks a bit more.
+MG_VALUE = {chess.PAWN: 82, chess.KNIGHT: 337, chess.BISHOP: 365,
+            chess.ROOK: 477, chess.QUEEN: 1025, chess.KING: 0}
+EG_VALUE = {chess.PAWN: 94, chess.KNIGHT: 281, chess.BISHOP: 297,
+            chess.ROOK: 512, chess.QUEEN: 936, chess.KING: 0}
+
+# Simple values used when only material is wanted, and for move ordering.
+SIMPLE_VALUE = {chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330,
+                chess.ROOK: 500, chess.QUEEN: 900, chess.KING: 0}
+
+
+# ===============================
+# Piece-square tables
+# ===============================
+# Written the way you'd look at the board from White's side:
+# first row = rank 8 (a8..h8), last row = rank 1 (a1..h1).
+# python-chess numbers squares a1=0 ... h8=63, so for a WHITE piece on square
+# `sq` the table index is sq ^ 56 (flips the rank). A BLACK piece uses the same
+# table mirrored, which is simply index `sq`.
+
+MG_PAWN = [
+      0,   0,   0,   0,   0,   0,  0,   0,
+     98, 134,  61,  95,  68, 126, 34, -11,
+     -6,   7,  26,  31,  65,  56, 25, -20,
+    -14,  13,   6,  21,  23,  12, 17, -23,
+    -27,  -2,  -5,  12,  17,   6, 10, -25,
+    -26,  -4,  -4, -10,   3,   3, 33, -12,
+    -35,  -1, -20, -23, -15,  24, 38, -22,
+      0,   0,   0,   0,   0,   0,  0,   0,
+]
+EG_PAWN = [
+      0,   0,   0,   0,   0,   0,   0,   0,
+    178, 173, 158, 134, 147, 132, 165, 187,
+     94, 100,  85,  67,  56,  53,  82,  84,
+     32,  24,  13,   5,  -2,   4,  17,  17,
+     13,   9,  -3,  -7,  -7,  -8,   3,  -1,
+      4,   7,  -6,   1,   0,  -5,  -1,  -8,
+     13,   8,   8,  10,  13,   0,   2,  -7,
+      0,   0,   0,   0,   0,   0,   0,   0,
+]
+MG_KNIGHT = [
+    -167, -89, -34, -49,  61, -97, -15, -107,
+     -73, -41,  72,  36,  23,  62,   7,  -17,
+     -47,  60,  37,  65,  84, 129,  73,   44,
+      -9,  17,  19,  53,  37,  69,  18,   22,
+     -13,   4,  16,  13,  28,  19,  21,   -8,
+     -23,  -9,  12,  10,  19,  17,  25,  -16,
+     -29, -53, -12,  -3,  -1,  18, -14,  -19,
+    -105, -21, -58, -33, -17, -28, -19,  -23,
+]
+EG_KNIGHT = [
+    -58, -38, -13, -28, -31, -27, -63, -99,
+    -25,  -8, -25,  -2,  -9, -25, -24, -52,
+    -24, -20,  10,   9,  -1,  -9, -19, -41,
+    -17,   3,  22,  22,  22,  11,   8, -18,
+    -18,  -6,  16,  25,  16,  17,   4, -18,
+    -23,  -3,  -1,  15,  10,  -3, -20, -22,
+    -42, -20, -10,  -5,  -2, -20, -23, -44,
+    -29, -51, -23, -15, -22, -18, -50, -64,
+]
+MG_BISHOP = [
+    -29,   4, -82, -37, -25, -42,   7,  -8,
+    -26,  16, -18, -13,  30,  59,  18, -47,
+    -16,  37,  43,  40,  35,  50,  37,  -2,
+     -4,   5,  19,  50,  37,  37,   7,  -2,
+     -6,  13,  13,  26,  34,  12,  10,   4,
+      0,  15,  15,  15,  14,  27,  18,  10,
+      4,  15,  16,   0,   7,  21,  33,   1,
+    -33,  -3, -14, -21, -13, -12, -39, -21,
+]
+EG_BISHOP = [
+    -14, -21, -11,  -8,  -7,  -9, -17, -24,
+     -8,  -4,   7, -12,  -3, -13,  -4, -14,
+      2,  -8,   0,  -1,  -2,   6,   0,   4,
+     -3,   9,  12,   9,  14,  10,   3,   2,
+     -6,   3,  13,  19,   7,  10,  -3,  -9,
+    -12,  -3,   8,  10,  13,   3,  -7, -15,
+    -14, -18,  -7,  -1,   4,  -9, -15, -27,
+    -23,  -9, -23,  -5,  -9, -16,  -5, -17,
+]
+MG_ROOK = [
+     32,  42,  32,  51,  63,   9,  31,  43,
+     27,  32,  58,  62,  80,  67,  26,  44,
+     -5,  19,  26,  36,  17,  45,  61,  16,
+    -24, -11,   7,  26,  24,  35,  -8, -20,
+    -36, -26, -12,  -1,   9,  -7,   6, -23,
+    -45, -25, -16, -17,   3,   0,  -5, -33,
+    -44, -16, -20,  -9,  -1,  11,  -6, -71,
+    -19, -13,   1,  17,  16,   7, -37, -26,
+]
+EG_ROOK = [
+    13, 10, 18, 15, 12,  12,   8,   5,
+    11, 13, 13, 11, -3,   3,   8,   3,
+     7,  7,  7,  5,  4,  -3,  -5,  -3,
+     4,  3, 13,  1,  2,   1,  -1,   2,
+     3,  5,  8,  4, -5,  -6,  -8, -11,
+    -4,  0, -5, -1, -7, -12,  -8, -16,
+    -6, -6,  0,  2, -9,  -9, -11,  -3,
+    -9,  2,  3, -1, -5, -13,   4, -20,
+]
+MG_QUEEN = [
+    -28,   0,  29,  12,  59,  44,  43,  45,
+    -24, -39,  -5,   1, -16,  57,  28,  54,
+    -13, -17,   7,   8,  29,  56,  47,  57,
+    -27, -27, -16, -16,  -1,  17,  -2,   1,
+     -9, -26,  -9, -10,  -2,  -4,   3,  -3,
+    -14,   2, -11,  -2,  -5,   2,  14,   5,
+    -35,  -8,  11,   2,   8,  15,  -3,   1,
+     -1, -18,  -9,  10, -15, -25, -31, -50,
+]
+EG_QUEEN = [
+     -9,  22,  22,  27,  27,  19,  10,  20,
+    -17,  20,  32,  41,  58,  25,  30,   0,
+    -20,   6,   9,  49,  47,  35,  19,   9,
+      3,  22,  24,  45,  57,  40,  57,  36,
+    -18,  28,  19,  47,  31,  34,  39,  23,
+    -16, -27,  15,   6,   9,  17,  10,   5,
+    -22, -23, -30, -16, -16, -23, -36, -32,
+    -33, -28, -22, -43,  -5, -32, -20, -41,
+]
+MG_KING = [
+    -65,  23,  16, -15, -56, -34,   2,  13,
+     29,  -1, -20,  -7,  -8,  -4, -38, -29,
+     -9,  24,   2, -16, -20,   6,  22, -22,
+    -17, -20, -12, -27, -30, -25, -14, -36,
+    -49,  -1, -27, -39, -46, -44, -33, -51,
+    -14, -14, -22, -46, -44, -30, -15, -27,
+      1,   7,  -8, -64, -43, -16,   9,   8,
+    -15,  36,  12, -54,   8, -28,  24,  14,
+]
+EG_KING = [
+    -74, -35, -18, -18, -11,  15,   4, -17,
+    -12,  17,  14,  17,  17,  38,  23,  11,
+     10,  17,  23,  15,  20,  45,  44,  13,
+     -8,  22,  24,  27,  26,  33,  26,   3,
+    -18,  -4,  21,  24,  27,  23,   9, -11,
+    -19,  -3,  11,  21,  23,  16,   7,  -9,
+    -27, -11,   4,  13,  14,   4,  -5, -17,
+    -53, -34, -21, -11, -28, -14, -24, -43,
+]
+
+MG_TABLES = {chess.PAWN: MG_PAWN, chess.KNIGHT: MG_KNIGHT, chess.BISHOP: MG_BISHOP,
+             chess.ROOK: MG_ROOK, chess.QUEEN: MG_QUEEN, chess.KING: MG_KING}
+EG_TABLES = {chess.PAWN: EG_PAWN, chess.KNIGHT: EG_KNIGHT, chess.BISHOP: EG_BISHOP,
+             chess.ROOK: EG_ROOK, chess.QUEEN: EG_QUEEN, chess.KING: EG_KING}
+
+# How much each piece counts toward "game phase". Full starting material = 24
+# (4 minor pieces x1, 4 rooks x2, 2 queens x4). 24 = pure middlegame, 0 = pure endgame.
+PHASE_WEIGHT = {chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 1,
+                chess.ROOK: 2, chess.QUEEN: 4, chess.KING: 0}
+MAX_PHASE = 24
+
+
+# ===============================
+# Precomputed lookup: value + table bonus for every (color, piece, square)
+# ===============================
+# Doing this once at import time means evaluate() is just table lookups,
+# which matters a lot in Python where the search calls it ~100k times per move.
+def _build_lookup(values, tables):
+    lookup = {}
+    for color in (chess.WHITE, chess.BLACK):
+        for piece_type in chess.PIECE_TYPES:
+            row = []
+            for sq in chess.SQUARES:
+                idx = sq ^ 56 if color == chess.WHITE else sq
+                row.append(values[piece_type] + tables[piece_type][idx])
+            lookup[(color, piece_type)] = row
+    return lookup
+
+MG_LOOKUP = _build_lookup(MG_VALUE, MG_TABLES)
+EG_LOOKUP = _build_lookup(EG_VALUE, EG_TABLES)
+
+
+# ===============================
+# Relational feature weights: (middlegame, endgame) in centipawns per count
+# ===============================
+# Starting guesses. tools/tune.py learns better values from game results and
+# writes them to weights.json, which is loaded instead when it exists.
+HAND_WEIGHTS = {
+    "pawn": (0, 0), "knight": (0, 0), "bishop": (0, 0), "rook": (0, 0), "queen": (0, 0),
+    "doubled_pawn": (-10, -20), "isolated_pawn": (-10, -15),
+    "supported_pawn": (5, 5), "phalanx_pawn": (5, 5),
+    "passed_pawn_r2": (0, 10), "passed_pawn_r3": (0, 15), "passed_pawn_r4": (5, 30),
+    "passed_pawn_r5": (10, 50), "passed_pawn_r6": (20, 80), "passed_pawn_r7": (30, 120),
+    "bishop_pair": (30, 50), "fianchetto": (10, 0), "knight_outpost": (20, 10),
+    "rook_open_file": (25, 10), "rook_semi_open_file": (10, 5),
+    "rook_on_7th": (20, 30), "connected_rooks": (5, 5),
+    "king_castled": (20, 0), "king_pawn_shield": (10, 0), "king_zone_attacks": (5, 0),
+    "knight_mobility": (4, 4), "bishop_mobility": (4, 4),
+    "rook_mobility": (2, 4), "queen_mobility": (1, 2),
+}
+
+WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "weights.json")
+
+
+def load_weights(path=WEIGHTS_PATH):
+    """Learned weights if tools/tune.py has produced them, else the hand-picked ones."""
+    weights = dict(HAND_WEIGHTS)
+    if os.path.exists(path):
+        with open(path) as f:
+            weights.update({k: tuple(v) for k, v in json.load(f)["weights"].items()})
+    return weights
+
+
+def evaluate_material(board: chess.Board) -> int:
+    """Material only (layer 1). Side-to-move perspective."""
+    score = 0
+    for piece_type in (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN):
+        v = SIMPLE_VALUE[piece_type]
+        score += v * chess.popcount(board.pieces_mask(piece_type, chess.WHITE))
+        score -= v * chess.popcount(board.pieces_mask(piece_type, chess.BLACK))
+    return score if board.turn == chess.WHITE else -score
+
+
+def pst_score_and_phase(board: chess.Board):
+    """Layers 1-3 from White's point of view: (middlegame score, endgame score, phase)."""
+    mg = [0, 0]  # indexed by color: [BLACK, WHITE] since chess.BLACK=False=0
+    eg = [0, 0]
+    phase = 0
+
+    for color in (chess.WHITE, chess.BLACK):
+        for piece_type in chess.PIECE_TYPES:
+            mask = board.pieces_mask(piece_type, color)
+            if not mask:
+                continue
+            mg_row = MG_LOOKUP[(color, piece_type)]
+            eg_row = EG_LOOKUP[(color, piece_type)]
+            for sq in chess.scan_forward(mask):
+                mg[color] += mg_row[sq]
+                eg[color] += eg_row[sq]
+                phase += PHASE_WEIGHT[piece_type]
+
+    # Early promotions can push phase above 24, so cap it.
+    return mg[chess.WHITE] - mg[chess.BLACK], eg[chess.WHITE] - eg[chess.BLACK], min(phase, MAX_PHASE)
+
+
+def evaluate_pst(board: chess.Board) -> int:
+    """Material + tapered piece-square tables (layers 1-3). Side-to-move perspective."""
+    mg, eg, phase = pst_score_and_phase(board)
+    # Tapered eval: blend middlegame and endgame scores by phase.
+    # int(x / 24) rounds toward zero, so White and Black are treated identically.
+    score = int((mg * phase + eg * (MAX_PHASE - phase)) / MAX_PHASE)
+    return score if board.turn == chess.WHITE else -score
+
+
+def make_evaluator(weights):
+    """Full evaluation (layers 1-4) using the given feature weights."""
+    mg_w = [weights[name][0] for name in FEATURE_NAMES]
+    eg_w = [weights[name][1] for name in FEATURE_NAMES]
+
+    def evaluate(board: chess.Board) -> int:
+        """Side-to-move perspective."""
+        mg, eg, phase = pst_score_and_phase(board)
+        for count, w_mg, w_eg in zip(extract_features(board), mg_w, eg_w):
+            if count:
+                mg += count * w_mg
+                eg += count * w_eg
+        score = int((mg * phase + eg * (MAX_PHASE - phase)) / MAX_PHASE)
+        return score if board.turn == chess.WHITE else -score
+
+    return evaluate
+
+
+# The evaluator the engine uses: learned weights if available, else hand-picked.
+evaluate = make_evaluator(load_weights())

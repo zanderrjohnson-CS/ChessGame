@@ -4,3 +4,6 @@ policy_net_best.pt
 policy_net_backup.pt
 chess_value_2024_elite.npz
 value_net.pt
+__pycache__/
+*.pyc
+_site/
