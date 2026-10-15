@@ -13,12 +13,21 @@
 #      tables (PSTs)     (knights in the center, pawns pushed, rooks on the 7th...)
 #   3. Tapered eval    - separate middlegame and endgame tables, blended by how
 #                        much material is left on the board
+#   4. Relational      - passed pawns, rooks on open files, king safety, mobility...
+#      features          (see features.py). Weights are hand-picked guesses in
+#                        HAND_WEIGHTS, replaced by learned ones from weights.json
+#                        once tools/tune.py has been run.
 #
 # The tables below are PeSTO's (Ronald Friederich), a well-known set that was
 # tuned automatically from game results, the same technique ("Texel tuning")
 # planned for later in v2.
 # ===============================
+import json
+import os
+
 import chess
+
+from chess_engine.v2.features import FEATURE_NAMES, extract_features
 
 
 # ===============================
@@ -198,6 +207,37 @@ MG_LOOKUP = _build_lookup(MG_VALUE, MG_TABLES)
 EG_LOOKUP = _build_lookup(EG_VALUE, EG_TABLES)
 
 
+# ===============================
+# Relational feature weights: (middlegame, endgame) in centipawns per count
+# ===============================
+# Starting guesses. tools/tune.py learns better values from game results and
+# writes them to weights.json, which is loaded instead when it exists.
+HAND_WEIGHTS = {
+    "pawn": (0, 0), "knight": (0, 0), "bishop": (0, 0), "rook": (0, 0), "queen": (0, 0),
+    "doubled_pawn": (-10, -20), "isolated_pawn": (-10, -15),
+    "supported_pawn": (5, 5), "phalanx_pawn": (5, 5),
+    "passed_pawn_r2": (0, 10), "passed_pawn_r3": (0, 15), "passed_pawn_r4": (5, 30),
+    "passed_pawn_r5": (10, 50), "passed_pawn_r6": (20, 80), "passed_pawn_r7": (30, 120),
+    "bishop_pair": (30, 50), "fianchetto": (10, 0), "knight_outpost": (20, 10),
+    "rook_open_file": (25, 10), "rook_semi_open_file": (10, 5),
+    "rook_on_7th": (20, 30), "connected_rooks": (5, 5),
+    "king_castled": (20, 0), "king_pawn_shield": (10, 0), "king_zone_attacks": (5, 0),
+    "knight_mobility": (4, 4), "bishop_mobility": (4, 4),
+    "rook_mobility": (2, 4), "queen_mobility": (1, 2),
+}
+
+WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "weights.json")
+
+
+def load_weights(path=WEIGHTS_PATH):
+    """Learned weights if tools/tune.py has produced them, else the hand-picked ones."""
+    weights = dict(HAND_WEIGHTS)
+    if os.path.exists(path):
+        with open(path) as f:
+            weights.update({k: tuple(v) for k, v in json.load(f)["weights"].items()})
+    return weights
+
+
 def evaluate_material(board: chess.Board) -> int:
     """Material only (layer 1). Side-to-move perspective."""
     score = 0
@@ -208,8 +248,8 @@ def evaluate_material(board: chess.Board) -> int:
     return score if board.turn == chess.WHITE else -score
 
 
-def evaluate(board: chess.Board) -> int:
-    """Material + tapered piece-square tables (layers 1-3). Side-to-move perspective."""
+def pst_score_and_phase(board: chess.Board):
+    """Layers 1-3 from White's point of view: (middlegame score, endgame score, phase)."""
     mg = [0, 0]  # indexed by color: [BLACK, WHITE] since chess.BLACK=False=0
     eg = [0, 0]
     phase = 0
@@ -226,11 +266,36 @@ def evaluate(board: chess.Board) -> int:
                 eg[color] += eg_row[sq]
                 phase += PHASE_WEIGHT[piece_type]
 
-    us, them = board.turn, not board.turn
-    mg_score = mg[us] - mg[them]
-    eg_score = eg[us] - eg[them]
+    # Early promotions can push phase above 24, so cap it.
+    return mg[chess.WHITE] - mg[chess.BLACK], eg[chess.WHITE] - eg[chess.BLACK], min(phase, MAX_PHASE)
 
+
+def evaluate_pst(board: chess.Board) -> int:
+    """Material + tapered piece-square tables (layers 1-3). Side-to-move perspective."""
+    mg, eg, phase = pst_score_and_phase(board)
     # Tapered eval: blend middlegame and endgame scores by phase.
-    # (Early promotions can push phase above 24, so cap it.)
-    phase = min(phase, MAX_PHASE)
-    return (mg_score * phase + eg_score * (MAX_PHASE - phase)) // MAX_PHASE
+    # int(x / 24) rounds toward zero, so White and Black are treated identically.
+    score = int((mg * phase + eg * (MAX_PHASE - phase)) / MAX_PHASE)
+    return score if board.turn == chess.WHITE else -score
+
+
+def make_evaluator(weights):
+    """Full evaluation (layers 1-4) using the given feature weights."""
+    mg_w = [weights[name][0] for name in FEATURE_NAMES]
+    eg_w = [weights[name][1] for name in FEATURE_NAMES]
+
+    def evaluate(board: chess.Board) -> int:
+        """Side-to-move perspective."""
+        mg, eg, phase = pst_score_and_phase(board)
+        for count, w_mg, w_eg in zip(extract_features(board), mg_w, eg_w):
+            if count:
+                mg += count * w_mg
+                eg += count * w_eg
+        score = int((mg * phase + eg * (MAX_PHASE - phase)) / MAX_PHASE)
+        return score if board.turn == chess.WHITE else -score
+
+    return evaluate
+
+
+# The evaluator the engine uses: learned weights if available, else hand-picked.
+evaluate = make_evaluator(load_weights())

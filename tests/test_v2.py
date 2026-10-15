@@ -4,7 +4,8 @@ import unittest
 
 import chess
 
-from chess_engine.v2.evaluate import evaluate, evaluate_material
+from chess_engine.v2.evaluate import evaluate, evaluate_material, evaluate_pst
+from chess_engine.v2.features import extract_features, F
 from chess_engine.v2.search import Searcher, MATE_SCORE
 
 
@@ -27,7 +28,10 @@ class TestEvaluate(unittest.TestCase):
                 if not moves:
                     break
                 board.push(rng.choice(moves))
-            self.assertEqual(evaluate(board), evaluate(board.mirror()), board.fen())
+            mirror = board.mirror()
+            self.assertEqual(evaluate(board), evaluate(mirror), board.fen())
+            self.assertEqual(evaluate_pst(board), evaluate_pst(mirror), board.fen())
+            self.assertEqual(extract_features(board), [-x for x in extract_features(mirror)])
             self.assertEqual(evaluate_material(board), evaluate_material(board.mirror()))
 
     def test_extra_queen_is_good(self):
@@ -35,6 +39,31 @@ class TestEvaluate(unittest.TestCase):
         self.assertGreater(evaluate(board), 800)
         board.turn = chess.BLACK
         self.assertLess(evaluate(board), -800)
+
+
+class TestFeatures(unittest.TestCase):
+    def feats(self, fen):
+        return extract_features(chess.Board(fen))
+
+    def test_pawn_structure(self):
+        # White: doubled + isolated c-pawns, passed a-pawn on the 6th. Black: h-pawn only.
+        f = self.feats("4k3/7p/P7/8/2P5/2P5/8/4K3 w - - 0 1")
+        self.assertEqual(f[F["doubled_pawn"]], 1)
+        self.assertEqual(f[F["isolated_pawn"]], 3 - 1)  # a + two c-pawns vs black h-pawn
+        self.assertEqual(f[F["passed_pawn_r6"]], 1)
+
+    def test_rooks(self):
+        # White rook on open d-file and on the 7th; black rook on a semi-open file.
+        f = self.feats("r3k3/1R6/8/8/8/8/P7/3RK3 w - - 0 1")
+        self.assertEqual(f[F["rook_open_file"]], 2)   # both white rooks (b- and d-files) are open
+        self.assertEqual(f[F["rook_on_7th"]], 1)
+        self.assertEqual(f[F["rook_semi_open_file"]], -1)
+
+    def test_fianchetto_and_castled_king(self):
+        f = self.feats("4k3/8/8/8/8/6P1/5PBP/6K1 w - - 0 1")
+        self.assertEqual(f[F["fianchetto"]], 1)
+        self.assertEqual(f[F["king_castled"]], 1)
+        self.assertEqual(f[F["king_pawn_shield"]], 3)  # f2, g3, h2
 
 
 class TestSearch(unittest.TestCase):

@@ -7,7 +7,9 @@
 #   python -m tools.match v2 v1 --games 40 --time 0.5
 #   python -m tools.match v2 v2-material --games 100 --time 0.2
 #
-# Engines: v2 (material + piece-square tables), v2-material (material only),
+# Engines: v2 (everything, learned weights if weights.json exists),
+#          v2-hand (relational features with hand-picked weights),
+#          v2-pst (material + piece-square tables), v2-material (material only),
 #          v1 (policy network + blunder filter; needs torch and policy_net.pt), random
 # ===============================
 import argparse
@@ -38,8 +40,10 @@ def make_engine(name, think_time):
         return v1
 
     from chess_engine.v2.search import Searcher
-    from chess_engine.v2.evaluate import evaluate, evaluate_material
-    eval_fn = {"v2": evaluate, "v2-material": evaluate_material}[name]
+    from chess_engine.v2.evaluate import (evaluate, evaluate_material, evaluate_pst,
+                                          make_evaluator, HAND_WEIGHTS)
+    eval_fn = {"v2": evaluate, "v2-hand": make_evaluator(HAND_WEIGHTS),
+               "v2-pst": evaluate_pst, "v2-material": evaluate_material}[name]
     searcher = Searcher(eval_fn=eval_fn)
     return lambda board: searcher.search(board, time_limit=think_time)["move"]
 

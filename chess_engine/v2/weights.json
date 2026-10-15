@@ -1,0 +1,129 @@
+{
+  "weights": {
+    "pawn": [
+      5,
+      -19
+    ],
+    "knight": [
+      25,
+      3
+    ],
+    "bishop": [
+      2,
+      -13
+    ],
+    "rook": [
+      18,
+      -9
+    ],
+    "queen": [
+      102,
+      -68
+    ],
+    "doubled_pawn": [
+      -5,
+      -17
+    ],
+    "isolated_pawn": [
+      -6,
+      -3
+    ],
+    "supported_pawn": [
+      8,
+      12
+    ],
+    "phalanx_pawn": [
+      4,
+      10
+    ],
+    "passed_pawn_r2": [
+      1,
+      6
+    ],
+    "passed_pawn_r3": [
+      -6,
+      14
+    ],
+    "passed_pawn_r4": [
+      -11,
+      35
+    ],
+    "passed_pawn_r5": [
+      5,
+      49
+    ],
+    "passed_pawn_r6": [
+      11,
+      56
+    ],
+    "passed_pawn_r7": [
+      8,
+      40
+    ],
+    "bishop_pair": [
+      30,
+      48
+    ],
+    "fianchetto": [
+      6,
+      0
+    ],
+    "knight_outpost": [
+      27,
+      15
+    ],
+    "rook_open_file": [
+      43,
+      -6
+    ],
+    "rook_semi_open_file": [
+      9,
+      13
+    ],
+    "rook_on_7th": [
+      -22,
+      0
+    ],
+    "connected_rooks": [
+      0,
+      8
+    ],
+    "king_castled": [
+      3,
+      -9
+    ],
+    "king_pawn_shield": [
+      8,
+      -6
+    ],
+    "king_zone_attacks": [
+      11,
+      -4
+    ],
+    "knight_mobility": [
+      4,
+      -1
+    ],
+    "bishop_mobility": [
+      4,
+      2
+    ],
+    "rook_mobility": [
+      3,
+      3
+    ],
+    "queen_mobility": [
+      0,
+      6
+    ]
+  },
+  "info": {
+    "dataset": "quiet-labeled.epd",
+    "positions": 725000,
+    "K": 1.6999999999999995,
+    "validation_mse_pst_only": 0.06208613494104625,
+    "validation_mse_hand": 0.06139006842637122,
+    "validation_mse_tuned": 0.0598107340961104,
+    "epochs": 600
+  }
+}
