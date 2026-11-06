@@ -83,13 +83,13 @@ test on. (Your chess.com dataset isn't in the repo, so I used a public GM game c
 |---|---|---|
 | 500 | 6.00 / 8.5% | **5.84 / 10.3%** |
 | 1,000 | 5.80 / 11.9% | **5.70 / 12.2%** |
-| 1,500 | 5.68 / 12.8% | **5.56 / 12.7%** |
+| 1,500 | 5.68 / 12.8% | **5.56** / 12.7% |
 | 2,000 | 5.54 / 12.7% | **5.44 / 13.4%** |
 | 2,500 | 5.47 / 14.1% | **5.36 / 15.0%** |
 
 *Accuracy* = how often the net's top legal move is the move the GM played.
 
-- **Learns a bit faster per step:** lower validation loss at every checkpoint, and after
+- **Learns a bit faster per step:** lower validation loss at every checkpoint (accuracy was a tie at 1,500), and after
   2,500 steps the new net beats where the old one was after 3,000 (5.40 / 14.9%). It wastes
   no effort pushing impossible moves down.
 - **Each step is cheaper:** 27.6M parameters instead of 40.7M. In an isolated timing test a
@@ -97,7 +97,7 @@ test on. (Your chess.com dataset isn't in the repo, so I used a public GM game c
   because loading data and other work don't shrink.
 - **Smaller model file:** about 110 MB instead of 160 MB.
 
-These are short runs, so the exact numbers are rough, but the direction was the same at
+These are short runs, so the exact numbers are rough, but the loss was lower for the new version at
 every checkpoint.
 
 ## 3. Getting training data: the chess.com section
