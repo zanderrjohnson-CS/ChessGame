@@ -78,3 +78,41 @@ if __name__ == "__main__":
     before = sum(t.numel() for t in old.values())
     after = sum(t.numel() for t in new.values())
     print(f"Converted {src} -> {dst}: {before:,} -> {after:,} numbers")
+
+
+def convert_dataset_labels(y_old, M_old=None):
+    """Re-label a dataset collected with the old 8192-slot index.
+
+    Returns (keep, y_new, M_new): keep is a boolean array of rows to keep
+    (underpromotions have no new slot and are dropped), y_new the new move
+    slots for the kept rows, and M_new the legal-move masks as booleans.
+    """
+    import chess
+    import numpy as np
+
+    from chess_engine.chess_model import move_to_index
+
+    old_index = old_move_to_index()
+    old_moves = {i: m for m, i in old_index.items()}
+
+    new_slot_of_old = np.full(OLD_NUM_MOVES, -1, dtype=np.int64)
+    for i, uci in old_moves.items():
+        try:
+            idx = move_to_index(chess.Move.from_uci(uci))
+        except (KeyError, chess.InvalidMoveError):
+            idx = None  # a never-possible move like a1a1 or a1c4
+        if idx is not None:
+            new_slot_of_old[i] = idx
+
+    y_mapped = new_slot_of_old[np.asarray(y_old)]
+    keep = y_mapped >= 0
+    y_new = y_mapped[keep]
+
+    M_new = None
+    if M_old is not None:
+        legal_old = np.asarray(M_old)[keep] == 0.0  # old masks: 0 = legal, -1e9 = illegal
+        M_new = np.zeros((len(y_new), len(MOVE_TO_INDEX)), dtype=bool)
+        for i in np.nonzero(new_slot_of_old >= 0)[0]:
+            # "e7e8" and "e7e8q" both land in slot e7e8, so OR them together.
+            M_new[:, new_slot_of_old[i]] |= legal_old[:, i]
+    return keep, y_new, M_new
