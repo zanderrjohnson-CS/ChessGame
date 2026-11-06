@@ -246,6 +246,13 @@ The page uses chess.js to track the game and calls the API after each of your mo
 
 Run it from the repo root with `uvicorn api.main:app --reload` and open http://127.0.0.1:8000.
 
+### Playing on Lichess: `uci_engine.py` *(new)*
+
+`uci_engine.py` lets the bot speak **UCI**, the text protocol chess programs use to talk to
+engines. [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) runs it and passes
+positions back and forth with Lichess. Setup steps and how the pieces connect are in
+[LICHESS.md](LICHESS.md).
+
 ---
 
 ## Things noticed for later steps

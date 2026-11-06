@@ -66,12 +66,13 @@ def _fmt(score):
     return f"{score / 100:+.2f}"
 
 
-def get_best_move(fen: str, time_limit: float = SEARCH_TIME_SECONDS) -> str:
-    """Find best move: policy network for ordering, alpha-beta search to verify."""
-    board = chess.Board(fen)
-    if board.is_game_over():
-        return None
+def choose_move(board: chess.Board, time_limit: float = SEARCH_TIME_SECONDS):
+    """Pick a move for this board, which may carry its move history (so the
+    search can spot repetition draws).
 
+    Returns (move, score in centipawns for the side to move, depth, positions searched).
+    """
+    board = board.copy()  # the search pushes and pops moves; don't touch the caller's board
     ranked = get_policy_ranked_moves(board)
     policy_rank = {move: i for i, (move, _) in enumerate(ranked)}
 
@@ -79,9 +80,9 @@ def get_best_move(fen: str, time_limit: float = SEARCH_TIME_SECONDS) -> str:
     results, depth = searcher.run(board, [m for m, _ in ranked], SEARCH_MAX_DEPTH)
 
     best_score = max(score for _, score in results if score is not None)
-    near_best = [m for m, score in results
+    near_best = [(m, score) for m, score in results
                  if score is not None and score > best_score - TIE_MARGIN]
-    choice = min(near_best, key=lambda m: policy_rank[m])
+    choice, choice_score = min(near_best, key=lambda r: policy_rank[r[0]])
 
     print(f"\nSearched depth {depth}, {searcher.nodes} positions")
     for move, score in sorted(results, key=_sort_key, reverse=True)[:5]:
@@ -89,7 +90,15 @@ def get_best_move(fen: str, time_limit: float = SEARCH_TIME_SECONDS) -> str:
             break
         mark = "<-" if move == choice else ""
         print(f"  {move.uci()}: search={_fmt(score)}, policy rank #{policy_rank[move] + 1} {mark}")
-    return choice.uci()
+    return choice, choice_score, depth, searcher.nodes
+
+
+def get_best_move(fen: str, time_limit: float = SEARCH_TIME_SECONDS) -> str:
+    """Find best move: policy network for ordering, alpha-beta search to verify."""
+    board = chess.Board(fen)
+    if board.is_game_over():
+        return None
+    return choose_move(board, time_limit)[0].uci()
 
 
 # Quick test
