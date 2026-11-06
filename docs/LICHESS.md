@@ -26,7 +26,14 @@
 Because the engine speaks plain UCI, any UCI program can use it, not only lichess-bot.
 For example, you could load it into a chess GUI like Cute Chess and play it against Stockfish.
 
-Two details in `uci_engine.py` that matter:
+Three details in `uci_engine.py` that matter:
+- **It announces UCI options.** Engines list their settings when they reply to `uci`, and
+  python-chess (which lichess-bot uses) refuses to send a setting the engine didn't
+  announce. lichess-bot's default `config.yml` sends `Move Overhead`, `Threads`, `Hash`,
+  `SyzygyPath` and `UCI_ShowWDL`, so the engine announces all of them. Two of them do
+  something: **Move Overhead** (milliseconds kept back each move for network lag, so the bot
+  doesn't lose on time) and **Threads** (CPU threads for the neural network). The others
+  are accepted and ignored, because this engine has no hash table or endgame tablebases.
 - **stdout is reserved for UCI.** lichess-bot reads everything the engine prints, so the
   bot's normal debug `print()`s are sent to stderr instead (you'll see them in the
   lichess-bot log).
@@ -47,6 +54,10 @@ ls -lh policy_net.pt          # should be ~160 MB
 git lfs pull                  # run this if it's only a few hundred bytes (a Git LFS pointer)
 pip install -r requirements.txt
 ```
+
+If `pip install -r requirements.txt` fails on `torch==2.5.1` (that version has no build for
+the newest Python releases), install the packages without the pins instead:
+`pip install torch chess numpy fastapi uvicorn requests`.
 
 ### 2. Test the engine on its own (optional, takes 10 seconds)
 
@@ -103,6 +114,11 @@ challenge:
   modes:
     - casual                           # start with unrated games
 ```
+
+Leave the `uci_options:` block under `engine:` as it is (or uncomment it if you commented it
+out). The engine accepts all of those settings. Raise `Move Overhead` (to 300, say) if the
+bot ever loses on time, and set `Threads` to the number of CPU cores your codespace has
+(`nproc` tells you).
 
 ### 6. Upgrade the account to a bot (one time, cannot be undone)
 
