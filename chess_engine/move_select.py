@@ -14,14 +14,20 @@ everything search can't tell apart (style, plans, openings).
 import chess
 import torch
 
-from chess_engine.chess_model import PolicyNetwork, MOVE_TO_INDEX, board_to_tensor
+from chess_engine.chess_model import PolicyNetwork, MOVE_TO_INDEX, board_to_tensor, move_to_index
+from chess_engine.convert_weights import convert, needs_conversion
 from chess_engine.search import MATE_SCORE, TIE_MARGIN, Searcher, _sort_key
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load policy network
+# Load policy network. Files trained with the old 8192-slot move index are
+# converted to the new 1792-slot index on the fly (see convert_weights.py).
+state_dict = torch.load("policy_net.pt", map_location=device, weights_only=True)
+if needs_conversion(state_dict):
+    state_dict = convert(state_dict)
+    print("Converted policy_net.pt from the old 8192-move index")
 policy_model = PolicyNetwork(len(MOVE_TO_INDEX)).to(device)
-policy_model.load_state_dict(torch.load("policy_net.pt", map_location=device, weights_only=True))
+policy_model.load_state_dict(state_dict)
 policy_model.eval()
 print("Loaded policy network")
 
@@ -39,13 +45,13 @@ def get_policy_ranked_moves(board):
     with torch.no_grad():
         logits = policy_model(board_tensor).squeeze(0)
 
-    # Get scores for all legal moves
+    # Get scores for all legal moves. Underpromotions have no slot; give them
+    # a very low score so they go last, but the search still checks them.
     legal_moves = []
     for move in board.legal_moves:
-        uci = move.uci()
-        if uci in MOVE_TO_INDEX:
-            idx = MOVE_TO_INDEX[uci]
-            legal_moves.append((move, logits[idx].item()))
+        idx = move_to_index(move)
+        score = logits[idx].item() if idx is not None else float("-inf")
+        legal_moves.append((move, score))
 
     # Sort by score (highest first)
     legal_moves.sort(key=lambda x: x[1], reverse=True)

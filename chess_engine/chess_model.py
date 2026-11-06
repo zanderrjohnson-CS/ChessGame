@@ -92,24 +92,66 @@ def board_to_tensor(board: chess.Board):
 # Move Indexing
 # ===============================
 
-#converts all possible moves to indices for NN (and back)
-def generate_move_to_index():
-    files = "abcdefgh"
-    ranks = "12345678"
-    moves = []
+# Converts moves to output slots for the NN (and back).
+#
+# Old version: every from-square x to-square pair (64*64) plus promotions = 8192
+# slots, but ~78% of them could never be played (a1a1, a1b3 for a rook...).
+#
+# New version: only moves that SOME piece could make on an empty board:
+#   - "queen lines": any number of squares straight or diagonally
+#     (this covers rook, bishop, queen, king and pawn moves, castling as e1g1 too)
+#   - knight jumps
+# That's 1456 + 336 = 1792 slots (Leela Chess Zero uses 1858; the extra 66 are
+# underpromotions).
+#
+# Promotions: a pawn reaching the last rank is stored in the same slot as its
+# from->to squares (e7e8q -> slot "e7e8"), i.e. we assume it promotes to a queen.
+# Underpromotions (to rook/bishop/knight) get no slot. The search still tries
+# them, because it generates moves with python-chess, not from these slots.
+#
+# Note a slot doesn't know WHICH piece is moving: "a1a8" is a rook move in one
+# game and a queen move in another, so we can't make per-piece slot lists.
+KNIGHT_JUMPS = [(1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2)]
+QUEEN_DIRECTIONS = [(0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1)]
 
-    for f1 in files:
-        for r1 in ranks:
-            for f2 in files:
-                for r2 in ranks:
-                    moves.append(f"{f1}{r1}{f2}{r2}")
-                    if r2 in ("1", "8"):
-                        for p in "qrbn":
-                            moves.append(f"{f1}{r1}{f2}{r2}{p}")
+
+def generate_move_to_index():
+    moves = []
+    for from_sq in chess.SQUARES:
+        f, r = chess.square_file(from_sq), chess.square_rank(from_sq)
+        targets = []
+        for df, dr in QUEEN_DIRECTIONS:
+            for dist in range(1, 8):
+                tf, tr = f + df * dist, r + dr * dist
+                if not (0 <= tf < 8 and 0 <= tr < 8):
+                    break
+                targets.append(chess.square(tf, tr))
+        for df, dr in KNIGHT_JUMPS:
+            tf, tr = f + df, r + dr
+            if 0 <= tf < 8 and 0 <= tr < 8:
+                targets.append(chess.square(tf, tr))
+        for to_sq in targets:
+            moves.append(chess.square_name(from_sq) + chess.square_name(to_sq))
 
     move_to_index = {m: i for i, m in enumerate(moves)}
     index_to_move = {i: m for m, i in move_to_index.items()}
     return move_to_index, index_to_move
+
+
+def move_to_index(move: chess.Move):
+    """Output slot for a move, or None for an underpromotion (no slot)."""
+    if move.promotion is not None and move.promotion != chess.QUEEN:
+        return None
+    return MOVE_TO_INDEX[chess.square_name(move.from_square) + chess.square_name(move.to_square)]
+
+
+def index_to_move(idx: int, board: chess.Board) -> chess.Move:
+    """Slot -> move on this board, adding '=Q' when a pawn reaches the last rank."""
+    move = chess.Move.from_uci(INDEX_TO_MOVE[idx])
+    piece = board.piece_at(move.from_square)
+    if piece and piece.piece_type == chess.PAWN and chess.square_rank(move.to_square) in (0, 7):
+        move.promotion = chess.QUEEN
+    return move
 
 
 MOVE_TO_INDEX, INDEX_TO_MOVE = generate_move_to_index()
@@ -155,10 +197,10 @@ def legal_move_mask(board):
     for move in board.legal_moves:
         #move.uci() returns i.e. e2e4 
 
-        uci = move.uci()
-        if uci in MOVE_TO_INDEX:
-            #move_to_index maps uci to index and then sets that index to 0 (legal)
-            mask[MOVE_TO_INDEX[uci]] = 0.0
+        idx = move_to_index(move)
+        if idx is not None:
+            #move_to_index maps the move to its slot, which is set to 0 (legal)
+            mask[idx] = 0.0
     #mask is applied to NN output logits to filter illegal moves
     return mask
 
@@ -183,13 +225,12 @@ def parse_game_to_policy_examples(pgn_text, start_move=0, end_move=999):
         if start_move <= move_num < end_move:
             #convert board to tensor
             board_tensor = board_to_tensor(board)
-            #get move in uci format
-            move_str = move.uci()
-            #mostly redundant but good for training stability.
-            if move_str in MOVE_TO_INDEX:
+            #get the move's output slot (None for rare underpromotions, which we skip)
+            move_idx = move_to_index(move)
+            if move_idx is not None:
                 mask = legal_move_mask(board)
                 #Could maybe remove mask to save 5x storage.
-                examples.append((board_tensor, MOVE_TO_INDEX[move_str], mask))
+                examples.append((board_tensor, move_idx, mask))
 
         board.push(move)
         move_num += 1

@@ -33,13 +33,72 @@ This style (one yes/no plane per piece type) is called **one-hot encoding**. It'
 AlphaZero uses too. Keeping the 8×8 shape lets the network see which pieces are *next to*
 each other, which matters a lot in chess.
 
-## 2. Turning moves into numbers: `generate_move_to_index`
+## 2. Turning moves into numbers: `generate_move_to_index` *(changed in step 2)*
 
-The network's output is a list of scores, one per possible move. Every
-"from-square → to-square" pair (64 × 64 = 4096) plus every promotion variant
-gets a fixed slot, **8192 slots in total**. `MOVE_TO_INDEX["e2e4"]` gives the slot number,
-`INDEX_TO_MOVE` goes back. Most slots are moves that can never happen (a1→a1),
-which is wasteful but simple, and it works.
+The network's output is a list of scores, one per possible move, so every move needs a
+fixed **slot** number. `move_to_index(move)` gives a move's slot; `index_to_move(slot, board)`
+goes back.
+
+**Before (8,192 slots):** every from-square → to-square pair (64 × 64 = 4096) plus four
+promotion versions of every move onto the first or last rank. About 78% of those slots were
+moves no piece can ever make (a1→a1, a1→c4). The network still had to learn to give them
+a score of "never", and every slot cost 2,049 weights in the last layer.
+
+**After (1,792 slots):** only moves that *some* piece could make on an empty board:
+
+- **Queen lines**: 1 to 7 squares in any straight or diagonal direction (1,456 slots). This
+  covers rooks, bishops, queens, kings, pawns, and castling (`e1g1` is a 2-square king move).
+- **Knight jumps** (336 slots).
+
+Leela Chess Zero uses almost the same list (1,858 slots; the extra 66 are underpromotions).
+
+**Why not a separate list per piece** (rooks only straight, bishops only diagonal)? A slot
+doesn't know which piece is moving. `a1a8` is a rook move in one game and a queen move in
+another, and the network learns from the board which piece is on a1. The queen-lines-plus-
+knight list is exactly the set of moves *any* piece can make, so it's already as small as
+a shared list can get. (AlphaZero went the other way, with 73 move types for each of the 64 squares,
+because that layout suits convolutions. It's bigger, not smaller.)
+
+**Promotions:** a pawn reaching the last rank uses its plain from→to slot (`e7e8q` goes into
+slot `e7e8`), so the network assumes promotion to a queen. Rook, bishop and knight
+promotions get no slot, so the network never suggests them and the training data skips
+them (only 3 of the ~118,000 grandmaster moves I tested with were underpromotions). The search still tries them, because it generates moves with
+python-chess, not from the slots, so the bot can still underpromote when it matters.
+
+**Masking still happens.** Shrinking the list removes moves that are *never* possible. The
+moves that are illegal *in this position* (a pinned piece, a blocked rook) still get
+filtered out each time the bot picks a move.
+
+**Your trained model still works.** The last layer, `Linear(2048, num_moves)`, has one row
+of weights per slot, and each row is its own detector for one move. Keeping only the rows
+whose moves still exist converts the old network without retraining
+(`chess_engine/convert_weights.py`, done automatically when `move_select.py` loads an old
+file). The converted network picks the same move as before in 100% of 3,000 test positions.
+
+**Before vs. after (trained from scratch, same data, same random seed).** I trained both
+versions on ~106,000 positions from 1,740 grandmaster games, holding out other games to
+test on. (Your chess.com dataset isn't in the repo, so I used a public GM game collection.)
+
+| Training steps | Old (8,192 slots) val loss / accuracy | New (1,792 slots) val loss / accuracy |
+|---|---|---|
+| 500 | 6.00 / 8.5% | **5.84 / 10.3%** |
+| 1,000 | 5.80 / 11.9% | **5.70 / 12.2%** |
+| 1,500 | 5.68 / 12.8% | **5.56** / 12.7% |
+| 2,000 | 5.54 / 12.7% | **5.44 / 13.4%** |
+| 2,500 | 5.47 / 14.1% | **5.36 / 15.0%** |
+
+*Accuracy* = how often the net's top legal move is the move the GM played.
+
+- **Learns a bit faster per step:** lower validation loss at every checkpoint (accuracy was a tie at 1,500), and after
+  2,500 steps the new net beats where the old one was after 3,000 (5.40 / 14.9%). It wastes
+  no effort pushing impossible moves down.
+- **Each step is cheaper:** 27.6M parameters instead of 40.7M. In an isolated timing test a
+  training step took 319 ms instead of 551 ms. In the full run it was closer to 10% faster,
+  because loading data and other work don't shrink.
+- **Smaller model file:** about 110 MB instead of 160 MB.
+
+These are short runs, so the exact numbers are rough, but the loss was lower for the new version at
+every checkpoint.
 
 ## 3. Getting training data: the chess.com section
 
@@ -66,19 +125,20 @@ A **policy** network answers "which move should I play here?" It has three parts
    **BatchNorm** keeps the numbers in a sensible range; **ReLU** (`max(0, x)`) is the
    non-linearity that lets a network learn anything more interesting than a straight line.
 3. **The policy head** (`policy_conv` + `policy_fc`): squashes the features down and uses
-   fully-connected layers to produce one score (a **logit**) for each of the 8192 move slots.
+   fully-connected layers to produce one score (a **logit**) for each of the 1,792 move slots.
    **Dropout(0.3)** randomly switches off 30% of neurons during training so the
    network can't just memorise the training games.
 
-Size: about **40.7 million parameters** (numbers the training adjusts). Note that 33.5M of
-those are in `policy_fc` alone, which is why `policy_net.pt` is 160 MB.
+Size: about **27.6 million parameters** (numbers the training adjusts), down from 40.7M
+before step 2 shrank the move list. 20.5M of those are still in `policy_fc`, mostly the
+`Linear(128*8*8, 2048)` layer, which is the next-biggest thing to slim down.
 
 ## 5. Training: `train()`
 
 Each loop over the whole dataset is an **epoch**; the data is fed in **batches** of 32.
 For every batch:
 
-1. **Forward pass**: the network scores all 8192 moves for each board.
+1. **Forward pass**: the network scores all 1,792 move slots for each board.
 2. **Loss**: `CrossEntropyLoss` measures how much probability the network gave to the move
    the grandmaster really played. Low loss = good guesses.
 3. **Backward pass** (`loss.backward()`): *backpropagation* works out, for every one of the
@@ -157,7 +217,7 @@ Run it from the repo root with `uvicorn api.main:app --reload` and open http://1
 - **Perspective.** The board isn't flipped for black, so the network must learn every
   pattern twice (once per colour). Flipping so "side to move" is always at the bottom is a
   standard trick.
-- **Stored masks (`M`)** take 8192 floats per example and are never used in training.
+- **Stored masks (`M`)** take one float per move slot (now 1,792, down from 8,192) per example and are never used in training.
 - **A value network** (`.gitignore` already mentions `value_net.pt`) could replace the
   hand-written `evaluate.py` with a learned evaluation.
 - `move_mask.py` isn't used anywhere (`move_select.py` does its own masking).
