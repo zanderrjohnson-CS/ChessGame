@@ -133,7 +133,7 @@ Size: about **27.6 million parameters** (numbers the training adjusts), down fro
 before step 2 shrank the move list. 20.5M of those are still in `policy_fc`, mostly the
 `Linear(128*8*8, 2048)` layer, which is the next-biggest thing to slim down.
 
-## 5. Training: `train()`
+## 5. Training: `train()` *(changed in step 3)*
 
 Each loop over the whole dataset is an **epoch**; the data is fed in **batches** of 32.
 For every batch:
@@ -142,13 +142,58 @@ For every batch:
 2. **Loss**: `CrossEntropyLoss` measures how much probability the network gave to the move
    the grandmaster really played. Low loss = good guesses.
 3. **Backward pass** (`loss.backward()`): *backpropagation* works out, for every one of the
-   40M parameters, which direction would have reduced the loss.
+   27.6M parameters, which direction would have reduced the loss.
 4. **Optimizer step**: `Adam` nudges every parameter a little in that direction.
    The *learning rate* (`lr`) is how big a nudge.
 
 Extras: **gradient clipping** stops a single weird batch from making a huge jump, and
-**ReduceLROnPlateau** halves the learning rate when the loss stops improving, so training
+**ReduceLROnPlateau** halves the learning rate when the validation loss stops improving, so training
 can settle into finer adjustments.
+
+### Validation set and early stopping *(new in step 3)*
+
+**The problem:** training loss *always* goes down if you train long enough, because the
+network can simply memorise the 100k training positions. Before step 3, "best model" was
+picked by training loss, so there was no way to tell learning from memorising.
+
+**The fix:** before training, ~10% of the **games** are set aside as a **validation set**.
+The network never trains on them. After every epoch it's tested on them:
+
+- **Val loss**: the same cross-entropy score, but on unseen positions.
+- **Val accuracy**: how often the network's favourite *legal* move (using the saved masks `M`,
+  which finally have a job) is the move the grandmaster played.
+
+Reading the log:
+
+| Train loss | Val loss | What it means |
+|---|---|---|
+| ↓ | ↓ | Learning real chess. Keep going. |
+| ↓ | → or ↑ | **Overfitting**: memorising the training games. |
+
+Even a 2-epoch test run on 60 games showed it: train loss fell from 7.33 to 5.97 while val loss went
+*up* (6.457 → 6.463).
+
+Now:
+- `policy_net_best.pt` is the epoch with the **lowest validation loss**.
+- The learning-rate scheduler watches validation loss too.
+- **Early stopping**: if validation loss hasn't improved for 8 epochs, training stops
+  instead of running all 100.
+
+**Why split by game, not by position?** Position 20 and position 21 of the same game are
+almost identical. If one were in training and the other in validation, the network could
+"recognise" the validation position, and the score would look better than it really is.
+That's called **data leakage**. New datasets save a game id `G` for every position.
+Older datasets have no `G`, so the script falls back to a random position split
+and says so.
+
+**Other data fixes:**
+- **Opening bug:** the 15k cap on opening positions checked the size of the *whole* list,
+  so after a few games no more openings were added. It now has its own counter.
+- **Random sample:** `[:100_000]` used to take the first 100k rows, which come mostly from
+  the first player fetched. It now takes a random 100k.
+- **Smaller files:** masks are saved as True/False (1 byte per slot) instead of 4-byte floats.
+- **Old datasets still load:** a dataset saved with the 8,192-slot index is re-labelled to
+  the new 1,792-slot index automatically (`convert_dataset_labels`).
 
 ## 6. Picking a move: `move_select.py` *(changed in step 1)*
 
@@ -205,19 +250,11 @@ Run it from the repo root with `uvicorn api.main:app --reload` and open http://1
 
 ## Things noticed for later steps
 
-- **No validation set.** "Best model" is chosen by *training* loss, which always keeps
-  going down, even when the network starts memorising instead of learning. Holding out
-  ~10% of positions and tracking loss/accuracy on them would show whether it's improving.
-- **Opening data bug.** `len(all_policy_examples) < 15000` counts *all* examples, so once
-  the list passes 15k (after a handful of games) no more opening positions are added.
-  And `[:MAX_POLICY_EXAMPLES]` takes the first 100k in order (mostly one player's games)
-  rather than a random sample.
 - **Castling channels** merge kingside and queenside rights into one plane per colour,
   so the network can't tell which side it may castle on.
 - **Perspective.** The board isn't flipped for black, so the network must learn every
   pattern twice (once per colour). Flipping so "side to move" is always at the bottom is a
   standard trick.
-- **Stored masks (`M`)** take one float per move slot (now 1,792, down from 8,192) per example and are never used in training.
 - **A value network** (`.gitignore` already mentions `value_net.pt`) could replace the
   hand-written `evaluate.py` with a learned evaluation.
 - `move_mask.py` isn't used anywhere (`move_select.py` does its own masking).

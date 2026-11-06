@@ -266,18 +266,42 @@ def parse_game_to_policy_examples(pgn_text, start_move=0, end_move=999):
 # ##### save_policy_examples function  ######
 # X = np.stack([e[0] for e in examples])  # All board tensors → (100000, 16, 8, 8)
 # y = np.array([e[1] for e in examples])  # All move indices  → (100000,)
-# M = np.stack([e[2] for e in examples])  # All masks         → (100000, 5000)
+# M = np.stack([e[2] == 0.0 for e in examples])  # Legal-move masks (True/False) → (100000, 1792)
 
 # np.savez_compressed(path, X=X, y=y, M=M)  # Save to disk
 
 
-def save_policy_examples(examples, path):
+def save_policy_examples(examples, game_ids, path):
     X = np.stack([e[0] for e in examples])
     y = np.array([e[1] for e in examples])
-    M = np.stack([e[2] for e in examples])
+    # Masks saved as True/False (1 byte per slot) instead of 0/-1e9 floats (4 bytes).
+    M = np.stack([e[2] == 0.0 for e in examples])
+    # G = which game each position came from, so we can split train/validation
+    # by GAME (positions from one game are too similar to be in both).
+    G = np.array(game_ids)
 
-    np.savez_compressed(path, X=X, y=y, M=M)
-    print(f"Saved {len(y)} policy examples to {path}")
+    np.savez_compressed(path, X=X, y=y, M=M, G=G)
+    print(f"Saved {len(y)} policy examples from {len(set(game_ids))} games to {path}")
+
+
+def load_policy_examples(path):
+    """Load a dataset; datasets saved before the 1792-slot move index are
+    re-labelled automatically. Returns X, y, M (bool legal masks), G (game ids or None)."""
+    from chess_engine.convert_weights import OLD_NUM_MOVES, convert_dataset_labels
+
+    data = np.load(path)
+    X, y, M = data["X"], data["y"], data["M"]
+    G = data["G"] if "G" in data.files else None
+
+    if M.shape[1] == OLD_NUM_MOVES:
+        print("Dataset uses the old 8192-move index; re-labelling it...")
+        keep, y, M = convert_dataset_labels(y, M)
+        X = X[keep]
+        G = G[keep] if G is not None else None
+        print(f"  dropped {int((~keep).sum())} underpromotion examples")
+    elif M.dtype != bool:
+        M = M == 0.0
+    return X, y, M, G
 
 
 
@@ -339,14 +363,16 @@ class PolicyNetwork(nn.Module):
             x = x.view(x.size(0), -1)
             return self.policy_fc(x)
 if __name__ == "__main__":
-    
-        
 
     # ===============================
     # DATA COLLECTION
     # ===============================
     if COLLECT_DATA:
         all_policy_examples = []
+        all_game_ids = []
+        early_count = 0  # opening positions collected so far
+        MAX_EARLY_EXAMPLES = 15_000
+        game_id = 0
 
         for player in PLAYERS:
             print(f"Fetching {player}...")
@@ -357,45 +383,62 @@ if __name__ == "__main__":
                 games = fetch_games_from_archive(archive)
                 for game in games:
                     pgn = game.get("pgn", "")
-                    
-                    # Policy examples - emphasize endgame
-                    # 15k early game (moves 0-15)
-                    early_examples = parse_game_to_policy_examples(pgn, start_move=0, end_move=15)
-                    if early_examples and len(all_policy_examples) < 15000:
+
+                    # Opening positions (moves 0-15), capped at 15k total.
+                    # (Bug fix: this used to check len(all_policy_examples), which
+                    # counts ALL examples, so openings stopped after a few games.)
+                    if early_count < MAX_EARLY_EXAMPLES:
+                        early_examples = parse_game_to_policy_examples(pgn, start_move=0, end_move=15)
                         all_policy_examples.extend(early_examples)
-                    
-                    # 60k mid to endgame (moves 15-60) - more emphasis on late game
+                        all_game_ids.extend([game_id] * len(early_examples))
+                        early_count += len(early_examples)
+
+                    # Middlegame and endgame positions (moves 15-60)
                     late_examples = parse_game_to_policy_examples(pgn, start_move=15, end_move=60)
                     all_policy_examples.extend(late_examples)
+                    all_game_ids.extend([game_id] * len(late_examples))
+                    game_id += 1
 
-        save_policy_examples(all_policy_examples, DATASET_PATH)
+        save_policy_examples(all_policy_examples, all_game_ids, DATASET_PATH)
 
     else:
         print("Skipping data collection.")
 
 
-
     # ===============================
-    # Dataset + Dataloader
+    # Dataset: sample, then split into TRAIN and VALIDATION
     # ===============================
-    # policy_data is like {"X": ..., "y": ..., "M": ...}
-    policy_data = np.load(DATASET_PATH)
-    print("Policy data:", policy_data["X"].shape, policy_data["y"].shape)
-    #"X" is the board tensor (board input), "y" is the move (correct move), "M" is the legal move masks
+    # X = board tensors (inputs), y = the move the GM played (labels),
+    # M = legal-move masks, G = which game each position came from.
+    X_all, y_all, M_all, G_all = load_policy_examples(DATASET_PATH)
+    print("Policy data:", X_all.shape, y_all.shape)
 
-    ######################################################################################################
-    ### M is not used for training (but could be used for inference to filter illegal moves from NN output?)
-    ######################################################################################################
+    rng = np.random.default_rng(seed=0)  # fixed seed so the split is the same every run
 
+    # Take a RANDOM sample, not the first N rows (the first rows are all one player's games).
+    MAX_POLICY_EXAMPLES = 100_000
+    if len(y_all) > MAX_POLICY_EXAMPLES:
+        sample = np.sort(rng.choice(len(y_all), MAX_POLICY_EXAMPLES, replace=False))
+        X_all, y_all, M_all = X_all[sample], y_all[sample], M_all[sample]
+        G_all = G_all[sample] if G_all is not None else None
 
-    MAX_POLICY_EXAMPLES = 100_000  # Increased from 40k. made up of 15k early game and 60k mid to endgame examples, but can adjust as needed.
+    # Validation set: ~10% of positions the network NEVER trains on. Its loss tells
+    # us whether the net is learning chess or just memorising the training games.
+    # We hold out whole GAMES: neighbouring positions of one game are nearly
+    # identical, so splitting them would let the net "cheat".
+    VAL_FRACTION = 0.10
+    if G_all is not None:
+        games = np.unique(G_all)
+        val_games = rng.choice(games, max(1, int(len(games) * VAL_FRACTION)), replace=False)
+        is_val = np.isin(G_all, val_games)
+    else:
+        print("No game ids in this dataset (collected before they were saved); "
+              "splitting by position instead. Re-collect data for a cleaner split.")
+        is_val = rng.random(len(y_all)) < VAL_FRACTION
 
-    X_policy = policy_data["X"][:MAX_POLICY_EXAMPLES]
-    y_policy = policy_data["y"][:MAX_POLICY_EXAMPLES]
-
-    print(f"Using {len(y_policy)} policy training examples")
-
-
+    X_train, y_train = X_all[~is_val], y_all[~is_val]
+    X_val, y_val, M_val = X_all[is_val], y_all[is_val], M_all[is_val]
+    print(f"Train: {len(y_train)} positions | Validation: {len(y_val)} positions")
 
 
     ##### Batch size #####
@@ -403,29 +446,26 @@ if __name__ == "__main__":
     # higher batch size has more stable gradients but may get stuck in local minima. lower batch size has more noisy gradients which can help escape local minima but may require more epochs to converge.
     ##############################################################################
     class ChessPolicyDataset(Dataset):
-        def __init__(self, X, y):
+        def __init__(self, X, y, M=None):
             self.X = torch.tensor(X, dtype=torch.float32)
             self.y = torch.tensor(y, dtype=torch.long)
+            self.M = torch.tensor(M, dtype=torch.bool) if M is not None else None
 
         def __len__(self):
             return len(self.y)
 
         def __getitem__(self, idx):
-            return self.X[idx], self.y[idx]
+            if self.M is None:
+                return self.X[idx], self.y[idx]
+            return self.X[idx], self.y[idx], self.M[idx]
 
-    policy_dataset = ChessPolicyDataset(X_policy, y_policy)
     policy_dataloader = DataLoader(
-        policy_dataset,
-        batch_size=32,  # Increased batch size for faster training
+        ChessPolicyDataset(X_train, y_train),
+        batch_size=32,
         shuffle=True, #randomize order of examples each epoch for better generalization
         num_workers=0 #Could set to >0 for faster data loading, but may cause issues on some platforms
     )
-
-
-    # ===============================
-    # IMPROVED Policy Network (Deeper, Residual Blocks)
-    # ===============================
-
+    val_dataloader = DataLoader(ChessPolicyDataset(X_val, y_val, M_val), batch_size=256, shuffle=False)
 
 
     # ===============================
@@ -438,63 +478,90 @@ if __name__ == "__main__":
     policy_criterion = nn.CrossEntropyLoss()
     policy_optimizer = optim.Adam(policy_model.parameters(), lr=2e-3)  # Higher initial LR
 
-    # Learning rate scheduler - reduce LR when loss plateaus
+    # Learning rate scheduler - halve the LR when VALIDATION loss stops improving
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        policy_optimizer, 
-        mode='min', 
-        factor=0.5, 
-        patience=5, 
-        verbose=True
+        policy_optimizer,
+        mode='min',
+        factor=0.5,
+        patience=3,
     )
 
+    MAX_EPOCHS = 100
+    EARLY_STOP_PATIENCE = 8  # stop if validation loss hasn't improved for this many epochs
+
+    def evaluate_on_validation():
+        """Validation loss, plus how often the net's favourite LEGAL move is the
+        move the grandmaster played (this is where the saved masks M are used)."""
+        policy_model.eval()  # turns dropout off
+        total_loss, correct, count = 0.0, 0, 0
+        with torch.no_grad():  # no gradients needed: we're only measuring
+            for boards, moves, masks in val_dataloader:
+                boards, moves, masks = boards.to(device), moves.to(device), masks.to(device)
+                logits = policy_model(boards)
+                total_loss += policy_criterion(logits, moves).item() * len(moves)
+                legal_logits = logits.masked_fill(~masks, float("-inf"))
+                correct += (legal_logits.argmax(dim=1) == moves).sum().item()
+                count += len(moves)
+        return total_loss / count, correct / count
+
     ### Training:
-    # model guesses move then calculate loss based off how far away from correct move. 
+    # model guesses move then calculate loss based off how far away from correct move.
     # Once loss is calculated, backpropagate through network to update parameters based on how much each parameter contributed to the error.
     #update parameters with optimizer. Adam is a good default choice for CNNs.
     def train():
-        print("\n=== Training Improved Policy Network ===")
+        print("\n=== Training Policy Network ===")
         print(f"Network parameters: {sum(p.numel() for p in policy_model.parameters()):,}")
-        
-        best_loss = float('inf')
-        
-        for epoch in range(100):  # 100 epochs as requested
+
+        best_val_loss = float('inf')
+        epochs_without_improvement = 0
+
+        for epoch in range(MAX_EPOCHS):
             total_loss = 0.0
             policy_model.train()
-            
+
             for boards, moves in policy_dataloader:
                 boards = boards.to(device)
                 moves = moves.to(device)
-                
+
                 policy_optimizer.zero_grad()
                 logits = policy_model(boards)
-                
+
                 loss = policy_criterion(logits, moves)
                 loss.backward()
-                
+
                 # Gradient clipping for stability
                 torch.nn.utils.clip_grad_norm_(policy_model.parameters(), max_norm=1.0)
-                
+
                 policy_optimizer.step()
                 total_loss += loss.item()
 
-            avg_loss = total_loss / len(policy_dataloader)
-            print(f"Epoch {epoch+1}/100 | Loss: {avg_loss:.4f} | LR: {policy_optimizer.param_groups[0]['lr']:.6f}")
-            
-            # Adjust learning rate based on loss
-            scheduler.step(avg_loss)
-            
-            # Save best model
-            if avg_loss < best_loss:
-                best_loss = avg_loss
+            train_loss = total_loss / len(policy_dataloader)
+            val_loss, val_acc = evaluate_on_validation()
+            print(f"Epoch {epoch+1}/{MAX_EPOCHS} | Train loss: {train_loss:.4f} | "
+                  f"Val loss: {val_loss:.4f} | Val accuracy: {val_acc:.1%} | "
+                  f"LR: {policy_optimizer.param_groups[0]['lr']:.6f}")
+
+            # Train loss going down while val loss goes UP = overfitting (memorising).
+            scheduler.step(val_loss)
+
+            # Keep the model that does best on positions it has never seen.
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                epochs_without_improvement = 0
                 torch.save(policy_model.state_dict(), "policy_net_best.pt")
-                print(f"  → New best model saved! (loss: {best_loss:.4f})")
-        
+                print(f"  → New best model saved! (val loss: {best_val_loss:.4f})")
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= EARLY_STOP_PATIENCE:
+                    print(f"Validation loss hasn't improved for {EARLY_STOP_PATIENCE} epochs; stopping early.")
+                    break
+
         # Save final model
         torch.save(policy_model.state_dict(), "policy_net.pt")
         print("\n✓ Training complete!")
         print(f"Final model saved as policy_net.pt")
-        print(f"Best model saved as policy_net_best.pt (loss: {best_loss:.4f})")
-
+        print(f"Best model saved as policy_net_best.pt (val loss: {best_val_loss:.4f})")
+        print("Copy policy_net_best.pt over policy_net.pt to play with the best one.")
 
 
     train()
